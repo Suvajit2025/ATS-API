@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<!--
+https://go.microsoft.com/fwlink/?LinkID=208121.
+-->
+<Project>
+  <PropertyGroup>
+    <_PublishTargetUrl>D:\ATS.API-Publish</_PublishTargetUrl>
+    <History>True|2025-04-18T07:38:29.0361856Z||;True|2025-04-18T12:33:28.1654061+05:30||;True|2025-04-14T20:14:18.2797445+05:30||;True|2025-04-14T15:37:30.2892856+05:30||;True|2025-04-14T15:29:17.6310760+05:30||;True|2025-04-14T15:01:41.4643280+05:30||;True|2025-04-14T15:01:09.2889684+05:30||;True|2025-04-14T14:57:45.3678013+05:30||;True|2025-04-14T14:53:19.3161216+05:30||;True|2025-04-14T14:52:00.4287840+05:30||;True|2025-04-14T14:40:49.4487043+05:30||;True|2025-04-14T14:00:03.2251484+05:30||;</History>
+    <LastFailureDetails />
+  </PropertyGroup>
+</Project>

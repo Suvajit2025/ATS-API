@@ -1,0 +1,12 @@
+{
+  "Version": 1,
+  "Hash": "UEkCUXE7PrR/s9y6oJBGN6iSewxx8uKPAQoig1eaB9E=",
+  "Source": "ATS.API",
+  "BasePath": "_content/ATS.API",
+  "Mode": "Default",
+  "ManifestType": "Build",
+  "ReferencedProjectsConfiguration": [],
+  "DiscoveryPatterns": [],
+  "Assets": [],
+  "Endpoints": []
+}

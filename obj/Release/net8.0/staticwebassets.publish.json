@@ -1,0 +1,20 @@
+{
+  "Version": 1,
+  "Hash": "X4wOZHfvfrdEq9rskym3KM4Di5xtkt9+sS6r1KTTaPQ=",
+  "Source": "ATS.API",
+  "BasePath": "_content/ATS.API",
+  "Mode": "Default",
+  "ManifestType": "Publish",
+  "ReferencedProjectsConfiguration": [],
+  "DiscoveryPatterns": [
+    {
+      "Name": "ATS.API\\wwwroot",
+      "Source": "ATS.API",
+      "ContentRoot": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\wwwroot\\",
+      "BasePath": "_content/ATS.API",
+      "Pattern": "**"
+    }
+  ],
+  "Assets": [],
+  "Endpoints": []
+}
