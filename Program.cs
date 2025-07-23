@@ -1,9 +1,12 @@
 ﻿using ATS.API.Interface;
+using ATS.API.Models;
 using ATS.API.Repository;
 using ATS.API.Services;
 using CommonUtility.DataAccess;
 using CommonUtility.Interface;
 using CommonUtility.Repository;
+using Microsoft.AspNetCore.Identity;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -65,6 +68,24 @@ builder.Services.AddScoped<IDataService>(provider =>
     var adoDataAccessEssP = new AdoDataAccess(dbConnEssP);
     return new DataServiceRepository(adoDataAccessEssP, dbConnEssP);
 });
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
+
+builder.Services.AddDbContext<ApplicationDbContext>(options =>
+    options.UseSqlServer(connectionString));
+
+
+
+builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
+{
+    options.Password.RequireDigit = false;
+    options.Password.RequireLowercase = false;
+    options.Password.RequireNonAlphanumeric = false; // 👈 This disables the special character requirement
+    options.Password.RequireUppercase = false;
+    options.Password.RequiredLength = 4;
+    options.Password.RequiredUniqueChars = 0;
+})
+.AddEntityFrameworkStores<ApplicationDbContext>()
+.AddDefaultTokenProviders();
 
 
 // Common services
@@ -92,6 +113,7 @@ builder.Services.AddCors(options =>
     });
 });
 
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline
@@ -104,6 +126,8 @@ if (app.Environment.IsDevelopment())
 app.UseCors("AllowFrontend");
 
 app.UseHttpsRedirection();
+
+app.UseAuthentication();
 
 // Use Authorization Middleware
 app.UseAuthorization();

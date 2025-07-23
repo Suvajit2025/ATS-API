@@ -379,6 +379,9 @@ namespace ATS.API.Controllers
                 // Output schema – breakdown and details keys only
                 var breakdownSchema = string.Join(", ", breakDownArray.Select(x => $"\"{x.Key}\": number"));
                 var detailSchema = string.Join(", ", breakDownArray.Select(x => $"\"{x.Key}\": string"));
+    //            var detailSchema = string.Join(", ", breakDownArray.Select(x =>
+    //$"\"{x.Key}\": {{ \"notes\": string, \"id\": number }}"));
+
                 string statusInfo = string.Join(", ", resultStatusArray.Select(x => x.Key));
 
                 // List out the category names for the generic instruction
@@ -386,10 +389,19 @@ namespace ATS.API.Controllers
                     breakDownArray.Select(x => x.Key));
 
                 // 2) Compose a single, generic “scoring instruction” line
+                //string scoringInstruction = $@"
+                //        For each category in Breakdown [{categoryList}], assign points **only** if there is 
+                //        explicit evidence in the CandidateProfile JSON or the Resume text; 
+                //        otherwise assign 0 to that category.";
                 string scoringInstruction = $@"
-                        For each category in Breakdown [{categoryList}], assign points **only** if there is 
-                        explicit evidence in the CandidateProfile JSON or the Resume text; 
-                        otherwise assign 0 to that category.";
+                For each category in Breakdown [{categoryList}], assign points **only** if there is 
+                explicit evidence in the CandidateProfile JSON or the Resume text; 
+                otherwise assign 0 to that category.
+                Also, generate a brief 'notes' string per category to explain the score.";
+                var breakdown = string.Join(",\n    ",
+                          breakDownArray.Select(x => $"\"{x.Key}\": {x.Value}"));
+                var details = string.Join(",\n    ",
+                           breakDownArray.Select(x => $"\"{x.Key}\": {{ \"id\": {x.Id}, \"notes\": \"Give a clear and Proper explanation why the candidate got this score based on {x.Key},avoiding overly optimistic or pessimistic scoring. \" }}"));
 
                 //string prompt = $@"
                 //    You are an Applicant Tracking System (ATS) evaluator. Use ONLY the explicit information provided below—do NOT assume anything not literally in the data.
@@ -449,8 +461,9 @@ namespace ATS.API.Controllers
                       ""percentage"": number,
                       ""remarks"": string,
                       ""Status"": one of [{string.Join(", ", resultStatusArray.Select(x => $"\"{x.Key}\""))}],
-                      ""breakdown"": {{ {breakdownSchema} }},
-                      ""details"": {{ {detailSchema} }}
+                       
+                      ""breakdown"": {{ {breakdown} }},
+                      ""details"": {{ {details} }}
                     }}
                     temperature = 0.2
                     ".Trim();
