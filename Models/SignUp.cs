@@ -10,6 +10,7 @@ namespace ATS.API.Models
         public int TenantId { get; set; }
         public long? CandidateId { get; set; }
         public Guid?  CandidateCode { get; set; }
+        public int? id {  get; set; }
     }
     public class ApplicationUser : IdentityUser
     {

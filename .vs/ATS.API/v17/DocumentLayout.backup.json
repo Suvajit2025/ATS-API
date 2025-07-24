@@ -1,22 +1,38 @@
 {
   "Version": 1,
-  "WorkspaceRootPath": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\",
+  "WorkspaceRootPath": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\",
   "Documents": [
     {
-      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\all project\\asp.net web aplication\\hrms_office\\live hrms 192\\hrms development\\ats.api\\controllers\\jobprofilecontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\archive\\ats.api 21-07-2025\\ats.api\\controllers\\jobprofilecontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|solutionrelative:controllers\\jobprofilecontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\all project\\asp.net web aplication\\hrms_office\\live hrms 192\\hrms development\\ats.api\\controllers\\atscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\archive\\ats.api 21-07-2025\\ats.api\\controllers\\atscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|solutionrelative:controllers\\atscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\all project\\asp.net web aplication\\hrms_office\\live hrms 192\\hrms development\\ats.api\\appsettings.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}",
+      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\archive\\ats.api 21-07-2025\\ats.api\\controllers\\authcontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|solutionrelative:controllers\\authcontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\archive\\ats.api 21-07-2025\\ats.api\\models\\signup.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|solutionrelative:models\\signup.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\archive\\ats.api 21-07-2025\\ats.api\\appsettings.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}",
       "RelativeMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|solutionrelative:appsettings.json||{90A6B3A7-C1A3-4009-A288-E2FF89E96FA0}"
     },
     {
-      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\all project\\asp.net web aplication\\hrms_office\\live hrms 192\\hrms development\\ats.api\\program.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\archive\\ats.api 21-07-2025\\ats.api\\controllers\\atsbatchprocesscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|solutionrelative:controllers\\atsbatchprocesscontroller.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\archive\\ats.api 21-07-2025\\ats.api\\program.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
       "RelativeMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|solutionrelative:program.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|d:\\archive\\ats.api 21-07-2025\\ats.api\\repository\\atshelperrepo.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
+      "RelativeMoniker": "D:0:0:{36B89D9E-70E9-4BD8-B100-9CC55E010190}|ATS.API.csproj|solutionrelative:repository\\atshelperrepo.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
     }
   ],
   "DocumentGroupContainers": [
@@ -26,17 +42,69 @@
       "DocumentGroups": [
         {
           "DockedWidth": 200,
-          "SelectedChildIndex": 3,
+          "SelectedChildIndex": 7,
           "Children": [
             {
               "$type": "Document",
               "DocumentIndex": 3,
+              "Title": "SignUp.cs",
+              "DocumentMoniker": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Models\\SignUp.cs",
+              "RelativeDocumentMoniker": "Models\\SignUp.cs",
+              "ToolTip": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Models\\SignUp.cs",
+              "RelativeToolTip": "Models\\SignUp.cs",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAQAAAARAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-23T11:23:49.143Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 5,
+              "Title": "ATSBatchProcessController.cs",
+              "DocumentMoniker": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Controllers\\ATSBatchProcessController.cs",
+              "RelativeDocumentMoniker": "Controllers\\ATSBatchProcessController.cs",
+              "ToolTip": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Controllers\\ATSBatchProcessController.cs",
+              "RelativeToolTip": "Controllers\\ATSBatchProcessController.cs",
+              "ViewState": "AgIAAA8AAAAAAAAAAAAAwBcAAAAIAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-23T08:12:55.424Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 7,
+              "Title": "ATSHelperRepo.cs",
+              "DocumentMoniker": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Repository\\ATSHelperRepo.cs",
+              "RelativeDocumentMoniker": "Repository\\ATSHelperRepo.cs",
+              "ToolTip": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Repository\\ATSHelperRepo.cs",
+              "RelativeToolTip": "Repository\\ATSHelperRepo.cs",
+              "ViewState": "AgIAALAAAAAAAAAAAAAmwMAAAAAIAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-23T08:12:55.446Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "AuthController.cs",
+              "DocumentMoniker": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Controllers\\AuthController.cs",
+              "RelativeDocumentMoniker": "Controllers\\AuthController.cs",
+              "ToolTip": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Controllers\\AuthController.cs",
+              "RelativeToolTip": "Controllers\\AuthController.cs",
+              "ViewState": "AgIAADYAAAAAAAAAAAAmwBsAAABBAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
+              "WhenOpened": "2025-07-21T09:56:34.998Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 6,
               "Title": "Program.cs",
-              "DocumentMoniker": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\Program.cs",
+              "DocumentMoniker": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Program.cs",
               "RelativeDocumentMoniker": "Program.cs",
-              "ToolTip": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\Program.cs",
+              "ToolTip": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Program.cs",
               "RelativeToolTip": "Program.cs",
-              "ViewState": "AgIAAGMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+              "ViewState": "AgIAACoAAAAAAAAAAAAAAEAAAAAhAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-07-11T08:28:50.451Z"
             },
@@ -44,24 +112,24 @@
               "$type": "Document",
               "DocumentIndex": 1,
               "Title": "ATSController.cs",
-              "DocumentMoniker": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\Controllers\\ATSController.cs",
+              "DocumentMoniker": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Controllers\\ATSController.cs",
               "RelativeDocumentMoniker": "Controllers\\ATSController.cs",
-              "ToolTip": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\Controllers\\ATSController.cs",
+              "ToolTip": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Controllers\\ATSController.cs",
               "RelativeToolTip": "Controllers\\ATSController.cs",
-              "ViewState": "AgIAAMEAAAAAAAAAAAAjwPEAAAALAAAAAAAAAA==",
+              "ViewState": "AgIAAGQAAAAAAAAAAAAgwB0AAACbAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-06-24T13:22:18.464Z",
               "EditorCaption": ""
             },
             {
               "$type": "Document",
-              "DocumentIndex": 2,
+              "DocumentIndex": 4,
               "Title": "appsettings.json",
-              "DocumentMoniker": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\appsettings.json",
+              "DocumentMoniker": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\appsettings.json",
               "RelativeDocumentMoniker": "appsettings.json",
-              "ToolTip": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\appsettings.json",
+              "ToolTip": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\appsettings.json",
               "RelativeToolTip": "appsettings.json",
-              "ViewState": "AgIAAAkAAAAAAAAAAAAAABAAAACIAwAAAAAAAA==",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAABEAAACXAwAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.001642|",
               "WhenOpened": "2025-06-24T11:41:34.701Z",
               "EditorCaption": ""
@@ -70,11 +138,11 @@
               "$type": "Document",
               "DocumentIndex": 0,
               "Title": "JobProfileController.cs",
-              "DocumentMoniker": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\Controllers\\JobProfileController.cs",
+              "DocumentMoniker": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Controllers\\JobProfileController.cs",
               "RelativeDocumentMoniker": "Controllers\\JobProfileController.cs",
-              "ToolTip": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\Controllers\\JobProfileController.cs",
+              "ToolTip": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\Controllers\\JobProfileController.cs",
               "RelativeToolTip": "Controllers\\JobProfileController.cs",
-              "ViewState": "AgIAAH8AAAAAAAAAAAAEwIoAAAAoAAAAAAAAAA==",
+              "ViewState": "AgIAAKUAAAAAAAAAAAAmwJMAAABAAAAAAAAAAA==",
               "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
               "WhenOpened": "2025-06-24T06:44:20.566Z",
               "EditorCaption": ""

@@ -64,6 +64,22 @@
     "ReturnTypes": []
   },
   {
+    "ContainingType": "ATS.API.Controllers.AuthController",
+    "Method": "SignUp",
+    "RelativePath": "Auth/SignUp",
+    "HttpMethod": "POST",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "signUp",
+        "Type": "ATS.API.Models.SignUp",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
     "ContainingType": "ATS.API.Controllers.JobProfileController",
     "Method": "CandidateResumeFile",
     "RelativePath": "JobProfile/CandidateResumeFile",

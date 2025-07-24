@@ -132,6 +132,12 @@ namespace ATS.API.Controllers
                 }
                 // Extract text from file
                 string extractedText = await _helper.ExtractTextAsync(filePath);
+
+                if (extractedText == "")
+                {
+                    return Ok(new { gptResponse = "[No text extracted from image-based PDF]" });
+                }
+
                 string prompt = _OpenAI_CandidateResumePrompt.Replace("{ResumeDescription}", extractedText);
                 prompt = prompt + _CandidateResumeResponseTemplate;
                 var gptResponse = await _helper.SendMessageAsync(prompt, _GptAPI);

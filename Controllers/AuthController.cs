@@ -3,6 +3,7 @@ using CommonUtility.Interface;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using System.Data;
 
 namespace ATS.API.Controllers
 {
@@ -11,10 +12,16 @@ namespace ATS.API.Controllers
     public class AuthController : ControllerBase
     {
         private readonly UserManager<ApplicationUser> _userManager;
-
-        public AuthController(UserManager<ApplicationUser> userManager)
+        private readonly IDataService _dataService;
+        private readonly IConfiguration _configuration;
+        private readonly string _conn;
+        public AuthController(UserManager<ApplicationUser> userManager,IDataService dataService,IConfiguration configuration)
         {
             _userManager = userManager;
+            _dataService = dataService;
+            _configuration = configuration;
+            _conn = configuration.GetConnectionString("DefaultConnection");
+
         }
 
         [HttpPost("SignUp")]
@@ -52,12 +59,52 @@ namespace ATS.API.Controllers
 
                 // ✅ Create new user
                 Guid candidateCodeGuid = Guid.Empty;
-                if (!string.IsNullOrWhiteSpace(signUp.CandidateCode?.ToString()) &&
-                    Guid.TryParse(signUp.CandidateCode.ToString(), out Guid parsedCandidateCode))
+                if (signUp.CandidateCode.HasValue && signUp.CandidateCode.Value != Guid.Empty)
                 {
-                    candidateCodeGuid = parsedCandidateCode;
+                    candidateCodeGuid = signUp.CandidateCode.Value;
                 }
+                else
+                {
+                    candidateCodeGuid = Guid.NewGuid(); // Generate new if not present
+                }
+                if (signUp.TenantKey == null)
+                { 
+                    var parameters=new Dictionary<string, object>() { 
+                        {"@IDCompany", signUp.id },
+                        {"@username",signUp.username},
+                    };
+                    DataSet ds = await _dataService.GetAllDatasetAsync("Get_TenantDetails", parameters, _conn);
 
+                    if (ds != null && ds.Tables.Count > 0 && ds.Tables[0].Rows.Count > 0)
+                    {
+                        var tenantRow = ds.Tables[0].Rows[0];
+
+                        signUp.TenantId = Convert.ToInt32(tenantRow["TenantId"]);
+                        signUp.TenantKey = Guid.Parse(tenantRow["TenantKey"].ToString());
+
+                        // Check if second table and at least one row exist before accessing
+                        if (ds.Tables.Count > 1 && ds.Tables[1].Rows.Count > 0)
+                        {
+                            var candidateRow = ds.Tables[1].Rows[0];
+                            signUp.CandidateId = Convert.ToInt64(candidateRow["CandidateId"]);
+                        }
+                    }
+                    else
+                    {
+                        // Handle not found
+                        Console.WriteLine("No tenant details found for given IDCompany.");
+                    }
+
+                }
+                
+                if (string.IsNullOrWhiteSpace(signUp.username) ||
+                    string.IsNullOrWhiteSpace(signUp.password) ||
+                    signUp.TenantKey == null ||
+                    signUp.TenantId <= 0 ||
+                    signUp.CandidateId == null || signUp.CandidateId <= 0 )
+                {
+                    return BadRequest("All fields are required and must be valid.");
+                }
                 var newUser = new ApplicationUser
                 {
                     UserName = signUp.username,

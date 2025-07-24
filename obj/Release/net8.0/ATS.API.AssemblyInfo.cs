@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ATS.API")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Release")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+458de993910f7d6166faca29254ae7dcac0683ac")]
 [assembly: System.Reflection.AssemblyProductAttribute("ATS.API")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ATS.API")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

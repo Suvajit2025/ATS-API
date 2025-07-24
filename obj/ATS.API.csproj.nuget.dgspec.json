@@ -1,23 +1,23 @@
 {
   "format": 1,
   "restore": {
-    "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\ATS.API.csproj": {}
+    "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\ATS.API.csproj": {}
   },
   "projects": {
-    "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\ATS.API.csproj": {
+    "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\ATS.API.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\ATS.API.csproj",
+        "projectUniqueName": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\ATS.API.csproj",
         "projectName": "ATS.API",
-        "projectPath": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\ATS.API.csproj",
-        "packagesPath": "C:\\Users\\Saikat Mandal\\.nuget\\packages\\",
-        "outputPath": "D:\\All project\\Asp.net web aplication\\HRMS_Office\\Live hrms 192\\HRMS DEVELOPMENT\\ATS.API\\obj\\",
+        "projectPath": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\ATS.API.csproj",
+        "packagesPath": "C:\\Users\\Suvajit Das\\.nuget\\packages\\",
+        "outputPath": "D:\\Archive\\ATS.API 21-07-2025\\ATS.API\\obj\\",
         "projectStyle": "PackageReference",
         "fallbackFolders": [
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
         ],
         "configFilePaths": [
-          "C:\\Users\\Saikat Mandal\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Users\\Suvajit Das\\AppData\\Roaming\\NuGet\\NuGet.Config",
           "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
           "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
         ],
@@ -45,7 +45,7 @@
           "auditLevel": "low",
           "auditMode": "direct"
         },
-        "SdkAnalysisLevel": "9.0.100"
+        "SdkAnalysisLevel": "9.0.300"
       },
       "frameworks": {
         "net8.0": {
@@ -63,9 +63,27 @@
               "target": "Package",
               "version": "[12.2.0, )"
             },
+            "Microsoft.AspNet.Identity.Core": {
+              "target": "Package",
+              "version": "[2.2.4, )"
+            },
+            "Microsoft.AspNetCore.Identity.EntityFrameworkCore": {
+              "target": "Package",
+              "version": "[8.0.5, )"
+            },
             "Microsoft.Data.SqlClient": {
               "target": "Package",
               "version": "[6.0.1, )"
+            },
+            "Microsoft.EntityFrameworkCore.SqlServer": {
+              "target": "Package",
+              "version": "[8.0.5, )"
+            },
+            "Microsoft.EntityFrameworkCore.Tools": {
+              "include": "Runtime, Build, Native, ContentFiles, Analyzers, BuildTransitive",
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[8.0.5, )"
             },
             "MongoDB.Bson": {
               "target": "Package",
@@ -119,7 +137,7 @@
               "privateAssets": "all"
             }
           },
-          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.101/PortableRuntimeIdentifierGraph.json"
+          "runtimeIdentifierGraphPath": "C:\\Program Files\\dotnet\\sdk\\9.0.302/PortableRuntimeIdentifierGraph.json"
         }
       }
     }
