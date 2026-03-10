@@ -7,79 +7,61 @@ using CommonUtility.Interface;
 using CommonUtility.Repository;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Hosting;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container
+// Controllers
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// ✅ Register IHttpContextAccessor
 builder.Services.AddHttpContextAccessor();
- 
 builder.Services.AddHttpClient();
-// Read the MaxConcurrency value from appsettings.json
+
+// Read concurrency setting
 int maxConcurrency = builder.Configuration.GetValue<int>("MaxConcurrency");
-builder.Services.AddScoped<ICandidateProcessor>(provider =>
-{
-    return new CandidateProcessor(provider.GetRequiredService<IATSHelper>(), maxConcurrency);
-});
-// ATS-specific services
+
+// ATS Services
 builder.Services.AddScoped<IATSHelper, ATSHelperRepo>();
 
-// Recruitment DB connection
+builder.Services.AddScoped<ICandidateProcessor>(provider =>
+{
+    return new CandidateProcessor(
+        provider.GetRequiredService<IATSHelper>(),
+        maxConcurrency
+    );
+});
+
+// DATABASE CONNECTIONS
 var dbConnRecruit = builder.Configuration.GetConnectionString("DBConnRecruitment");
-
-// RecruitmentDemo DB connection
 var dbConnRecruitDemo = builder.Configuration.GetConnectionString("DBConnRecruitmentDemo");
-
-// ESSP DB connection
 var dbConnEssP = builder.Configuration.GetConnectionString("DBConnEssp");
+var dbConnSaaSEssP = builder.Configuration.GetConnectionString("DBConnSaaSEssP");
 
-// Register AdoDataAccess for Recruitment
-builder.Services.AddScoped<AdoDataAccess>(provider => new AdoDataAccess(dbConnRecruit));
-
-// Register AdoDataAccess for RecruitmentDemo
-builder.Services.AddScoped<AdoDataAccess>(provider => new AdoDataAccess(dbConnRecruitDemo));
-
-// Register AdoDataAccess for RecruitmentDemo
-builder.Services.AddScoped<AdoDataAccess>(provider => new AdoDataAccess(dbConnEssP));
-
-// Register IDataService for Recruitment
-builder.Services.AddScoped<IDataService>(provider =>
+// Register ONE ADO + DataService
+builder.Services.AddScoped<AdoDataAccess>(provider =>
 {
-    var adoDataAccess = new AdoDataAccess(dbConnRecruit);
-    return new DataServiceRepository(adoDataAccess, dbConnRecruit);
+    return new AdoDataAccess(dbConnRecruit);
 });
 
-// Register IDataService for RecruitmentDemo
 builder.Services.AddScoped<IDataService>(provider =>
 {
-    var adoDataAccessDemo = new AdoDataAccess(dbConnRecruitDemo);
-    return new DataServiceRepository(adoDataAccessDemo, dbConnRecruitDemo);
+    var ado = provider.GetRequiredService<AdoDataAccess>();
+    return new DataServiceRepository(ado, dbConnRecruit);
 });
 
-// Register IDataService for Essp
-builder.Services.AddScoped<IDataService>(provider =>
-{
-    var adoDataAccessEssP = new AdoDataAccess(dbConnEssP);
-    return new DataServiceRepository(adoDataAccessEssP, dbConnEssP);
-});
+// Identity DB
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
 
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
     options.UseSqlServer(connectionString));
 
-
-
+// Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
 {
     options.Password.RequireDigit = false;
     options.Password.RequireLowercase = false;
-    options.Password.RequireNonAlphanumeric = false; // 👈 This disables the special character requirement
+    options.Password.RequireNonAlphanumeric = false;
     options.Password.RequireUppercase = false;
     options.Password.RequiredLength = 4;
     options.Password.RequiredUniqueChars = 0;
@@ -87,53 +69,59 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
 .AddEntityFrameworkStores<ApplicationDbContext>()
 .AddDefaultTokenProviders();
 
+// Repository
+builder.Services.AddScoped<IETimeTrackRepository, ETimeTrackRepository>();
 
-// Common services
+// Hosted Services
+builder.Services.AddHostedService<ETimeTrackCollectorService>();
+builder.Services.AddHostedService<RawPunchFallbackService>();
+builder.Services.AddHostedService<MidnightAttendanceService>();
+
+// Bind Attendance Job Settings
+builder.Services.Configure<AttendanceJobSettings>(
+    builder.Configuration.GetSection("AttendanceJobs")
+);
+
+// Common Services
 builder.Services.AddScoped<ICommonService, CommonServiceRepository>();
 builder.Services.AddScoped<IEncryptDecrypt, EncryptDecryptRepository>();
 builder.Services.AddScoped<IConversion, ConversionRepository>();
 
-// Background Task Queue and Processor
-//builder.Services.AddSingleton<IBackgroundTaskQueue, BackgroundTaskQueue>();  // Register BackgroundTaskQueue
-
+// Background Queue
 builder.Services.AddSingleton<IBackgroundTaskQueue>(provider =>
 {
     return new BackgroundTaskQueue(maxConcurrency);
 });
 
-builder.Services.AddHostedService<BackgroundTaskProcessorService>();        // Register BackgroundTaskProcessorService
+builder.Services.AddHostedService<BackgroundTaskProcessorService>();
 
+// CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("https://recruitment.mendine.co.in/")  
+        policy.WithOrigins("https://recruitment.mendine.co.in")
               .AllowAnyHeader()
               .AllowAnyMethod();
     });
 });
 
-
 var app = builder.Build();
-
-// Configure the HTTP request pipeline
+// Swagger
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
+// Middleware
 app.UseCors("AllowFrontend");
 
 app.UseHttpsRedirection();
 
 app.UseAuthentication();
-
-// Use Authorization Middleware
 app.UseAuthorization();
 
-// Map Controllers to handle HTTP requests
 app.MapControllers();
 
-// Run the application
 app.Run();

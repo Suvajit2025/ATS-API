@@ -344,127 +344,102 @@ namespace ATS.API.Controllers
                     { "@CandidateId", candidateId }
                 };
 
-                DataTable dt = await _dataService.GetDataAsync("SP_ATS_PROMT", parameters, _ConnectionString);
+                DataTable dt = await _dataService.GetDataAsync(
+                    "SP_ATS_PROMT",
+                    parameters,
+                    _ConnectionString
+                );
 
-                if (dt.Rows.Count > 0)
+                if (dt.Rows.Count == 0 || dt.Rows[0]["AtsPrompt"] == DBNull.Value)
                 {
-                    profileJson = dt.Rows[0]["AtsPrompt"]?.ToString();
-                }
-
-                if (string.IsNullOrWhiteSpace(profileJson))
-                {
-                    result.Prompt = JsonConvert.SerializeObject(new { error = "No data returned from stored procedure." });
+                    result.Prompt = JsonConvert.SerializeObject(
+                        new { error = "No data returned from stored procedure." }
+                    );
                     return result;
                 }
 
+                profileJson = dt.Rows[0]["AtsPrompt"].ToString();
                 var jObj = JObject.Parse(profileJson);
 
                 decimal totalScore = jObj["Total Score"]?.Value<decimal>() ?? 100;
-                string breakDownRaw = jObj["BreakDownScore"]?.ToString();
-                string resultStatusRaw = jObj["Result Status"]?.ToString();
 
-                var breakDownArray = JsonConvert.DeserializeObject<List<RatingItem>>(breakDownRaw);
-                //var breakDownArray = JsonConvert.DeserializeObject<List<RatingItem>>(breakDownRaw);
-                var resultStatusArray = JsonConvert.DeserializeObject<List<ResultStatusItem>>(resultStatusRaw);
+                var breakDownArray = JsonConvert.DeserializeObject<List<RatingItem>>(
+                    jObj["BreakDownScore"]?.ToString() ?? "[]"
+                );
 
-                // Compressed format: Skill:30, Qualification:30...
-                var breakdownScores = string.Join(", ", breakDownArray.Select(x => $"{x.Key}:{x.Value}"));
-                var resultRules = string.Join(", ", resultStatusArray.Select(x => $"{x.Key}:{x.Value}"));
+                var resultStatusArray = JsonConvert.DeserializeObject<List<ResultStatusItem>>(
+                    jObj["Result Status"]?.ToString() ?? "[]"
+                );
 
-                // Inject keywords: Skills:React,Node.js; Qualification:MBA,B.Tech
-                var keywordHints = string.Join("; ", breakDownArray
-                    .Where(x => x.Keywords != null && x.Keywords.Any())
-                    .Select(x => $"{x.Key}:{string.Join(",", x.Keywords)}"));
+                // -------- Prompt helpers --------
 
-                // Output schema – breakdown and details keys only
-                var breakdownSchema = string.Join(", ", breakDownArray.Select(x => $"\"{x.Key}\": number"));
-                var detailSchema = string.Join(", ", breakDownArray.Select(x => $"\"{x.Key}\": string"));
-    //            var detailSchema = string.Join(", ", breakDownArray.Select(x =>
-    //$"\"{x.Key}\": {{ \"notes\": string, \"id\": number }}"));
+                string resultRules = string.Join(", ",
+                    resultStatusArray.Select(x => $"{x.Key}:{x.Value}")
+                );
 
-                string statusInfo = string.Join(", ", resultStatusArray.Select(x => x.Key));
+                string statusOptions = string.Join(", ",
+                    resultStatusArray.Select(x => $"\"{x.Key}\"")
+                );
 
-                // List out the category names for the generic instruction
-                string categoryList = string.Join(", ",
-                    breakDownArray.Select(x => x.Key));
+                string keywordHints = string.Join("; ",
+                    breakDownArray
+                        .Where(x => x.Keywords != null && x.Keywords.Any())
+                        .Select(x => $"{x.Key}:{string.Join(",", x.Keywords)}")
+                );
 
-                // 2) Compose a single, generic “scoring instruction” line
-                //string scoringInstruction = $@"
-                //        For each category in Breakdown [{categoryList}], assign points **only** if there is 
-                //        explicit evidence in the CandidateProfile JSON or the Resume text; 
-                //        otherwise assign 0 to that category.";
+                // Build scores schema (NO values prefilled)
+                string scoresSchema = string.Join(",\n    ",
+                    breakDownArray.Select(x =>
+                        $"\"{x.Key}\": {{ \"total\": {x.Value}, \"obtained\": number, \"id\": {x.Id}, \"notes\": string }}"
+                    )
+                );
+
+                // -------- Core scoring instruction --------
+
                 string scoringInstruction = $@"
-                For each category in Breakdown [{categoryList}], assign points **only** if there is 
-                explicit evidence in the CandidateProfile JSON or the Resume text; 
-                otherwise assign 0 to that category.
-                Also, generate a brief 'notes' string per category to explain the score.";
-                var breakdown = string.Join(",\n    ",
-                          breakDownArray.Select(x => $"\"{x.Key}\": {x.Value}"));
-                var details = string.Join(",\n    ",
-                           breakDownArray.Select(x => $"\"{x.Key}\": {{ \"id\": {x.Id}, \"notes\": \"Give a clear and Proper explanation why the candidate got this score based on {x.Key},avoiding overly optimistic or pessimistic scoring. \" }}"));
+                    For each category, calculate an obtained score between 0 and the category’s total
+                    using ONLY explicit evidence found in the CandidateProfile JSON or Resume text.
 
-                //string prompt = $@"
-                //    You are an Applicant Tracking System (ATS) evaluator. Use ONLY the explicit information provided below—do NOT assume anything not literally in the data.
+                    Rules:
+                    - Do NOT infer or assume missing information.
+                    - obtained must be a number ≤ total.
+                    - If no explicit evidence exists, obtained = 0.
+                    - match_score MUST equal the sum of all obtained values.
+                    - percentage = (match_score / {totalScore}) × 100.
+                    ";
 
-                //    Total Score: {totalScore}
-                //    Breakdown: {breakdownScores}
-                //    Result Rules: {resultRules}
-                //    Keywords (internal use only): {keywordHints}
+                                    // -------- Final prompt --------
 
-                //    Compare the following Job Description and Resume using keywords as scoring hints.
-                //    Score each category accordingly and compute:
-
-                //    - match_score = sum of section scores
-                //    - percentage = match_score / Total Score × 100
-                //    - Status = based on Result Rules
-
-                //    Return JSON only:
-                //    {{
-                //      ""match_score"": number,
-                //      ""percentage"": number,
-                //      ""remarks"": string,
-                //      ""Status"": one of [{statusInfo}],
-                //      ""breakdown"": {{ {breakdownSchema} }},
-                //      ""details"": {{ {detailSchema} }}
-                //    }}
-
-                //    JD: {jobText}
-                //    Resume: {resumeText}
-                //    temperature = 0.2
-                //    ".Trim();
-
-                // 3) Now build your prompt—notice there are no hard-coded rules anymore
-                string prompt = $@"
-                    You are an Applicant Tracking System (ATS) evaluator. Use **only** the explicit data supplied—do **not** infer or assume anything extra.
+                                    string prompt = $@"
+                    You are an Applicant Tracking System (ATS) evaluator.
+                    Use ONLY the explicit data supplied below. Do NOT infer or assume anything.
 
                     Total Score: {totalScore}
-                    Breakdown: {breakdownScores}
                     Result Rules: {resultRules}
                     Keywords (internal use only): {keywordHints}
 
                     CandidateProfile JSON:
                     {JsonConvert.SerializeObject(jObj["CandidateProfile"], Formatting.None)}
 
-                    JD: {jobText}
-                    Resume: {resumeText}
+                    JD:
+                    {jobText}
+
+                    Resume:
+                    {resumeText}
 
                     {scoringInstruction}
 
-                    Compute:
-                    - match_score = sum of section scores  
-                    - percentage = match_score / Total Score × 100  
-                    - Status = choose based on the Result Rules  
-
-                    Return JSON only:
+                    Return JSON ONLY in the exact structure below:
                     {{
-                      ""match_score"": number,
-                      ""percentage"": number,
-                      ""remarks"": string,
-                      ""Status"": one of [{string.Join(", ", resultStatusArray.Select(x => $"\"{x.Key}\""))}],
-                       
-                      ""breakdown"": {{ {breakdown} }},
-                      ""details"": {{ {details} }}
+                        ""match_score"": number,
+                        ""percentage"": number,
+                        ""remarks"": string,
+                        ""Status"": one of [{statusOptions}],
+                        ""scores"": {{
+                        {scoresSchema}
+                        }}
                     }}
+
                     temperature = 0.2
                     ".Trim();
 
@@ -479,13 +454,171 @@ namespace ATS.API.Controllers
             {
                 result.Prompt = JsonConvert.SerializeObject(new
                 {
-                    error = "An error occurred while generating Prompt For ATS.",
+                    error = "An error occurred while generating ATS prompt.",
                     details = ex.Message
                 });
 
                 return result;
             }
         }
+
+
+
+        //    private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId, string jobText, string resumeText)
+        //    {
+        //        var result = new AtsPromptResult();
+
+        //        try
+        //        {
+        //            string profileJson = string.Empty;
+
+        //            var parameters = new Dictionary<string, object>
+        //            {
+        //                { "@CandidateId", candidateId }
+        //            };
+
+        //            DataTable dt = await _dataService.GetDataAsync("SP_ATS_PROMT", parameters, _ConnectionString);
+
+        //            if (dt.Rows.Count > 0)
+        //            {
+        //                profileJson = dt.Rows[0]["AtsPrompt"]?.ToString();
+        //            }
+
+        //            if (string.IsNullOrWhiteSpace(profileJson))
+        //            {
+        //                result.Prompt = JsonConvert.SerializeObject(new { error = "No data returned from stored procedure." });
+        //                return result;
+        //            }
+
+        //            var jObj = JObject.Parse(profileJson);
+
+        //            decimal totalScore = jObj["Total Score"]?.Value<decimal>() ?? 100;
+        //            string breakDownRaw = jObj["BreakDownScore"]?.ToString();
+        //            string resultStatusRaw = jObj["Result Status"]?.ToString();
+
+        //            var breakDownArray = JsonConvert.DeserializeObject<List<RatingItem>>(breakDownRaw);
+        //            //var breakDownArray = JsonConvert.DeserializeObject<List<RatingItem>>(breakDownRaw);
+        //            var resultStatusArray = JsonConvert.DeserializeObject<List<ResultStatusItem>>(resultStatusRaw);
+
+        //            // Compressed format: Skill:30, Qualification:30...
+        //            var breakdownScores = string.Join(", ", breakDownArray.Select(x => $"{x.Key}:{x.Value}"));
+        //            var resultRules = string.Join(", ", resultStatusArray.Select(x => $"{x.Key}:{x.Value}"));
+
+        //            // Inject keywords: Skills:React,Node.js; Qualification:MBA,B.Tech
+        //            var keywordHints = string.Join("; ", breakDownArray
+        //                .Where(x => x.Keywords != null && x.Keywords.Any())
+        //                .Select(x => $"{x.Key}:{string.Join(",", x.Keywords)}"));
+
+        //            // Output schema – breakdown and details keys only
+        //            var breakdownSchema = string.Join(", ", breakDownArray.Select(x => $"\"{x.Key}\": number"));
+        //            var detailSchema = string.Join(", ", breakDownArray.Select(x => $"\"{x.Key}\": string"));
+        ////            var detailSchema = string.Join(", ", breakDownArray.Select(x =>
+        ////$"\"{x.Key}\": {{ \"notes\": string, \"id\": number }}"));
+
+        //            string statusInfo = string.Join(", ", resultStatusArray.Select(x => x.Key));
+
+        //            // List out the category names for the generic instruction
+        //            string categoryList = string.Join(", ",
+        //                breakDownArray.Select(x => x.Key));
+
+        //            // 2) Compose a single, generic “scoring instruction” line
+        //            //string scoringInstruction = $@"
+        //            //        For each category in Breakdown [{categoryList}], assign points **only** if there is 
+        //            //        explicit evidence in the CandidateProfile JSON or the Resume text; 
+        //            //        otherwise assign 0 to that category.";
+        //            string scoringInstruction = $@"
+        //            For each category in Breakdown [{categoryList}], assign points **only** if there is 
+        //            explicit evidence in the CandidateProfile JSON or the Resume text; 
+        //            otherwise assign 0 to that category.
+        //            Also, generate a brief 'notes' string per category to explain the score.";
+        //            var breakdown = string.Join(",\n    ",
+        //                      breakDownArray.Select(x => $"\"{x.Key}\": {x.Value}"));
+        //            var details = string.Join(",\n    ",
+        //                       breakDownArray.Select(x => $"\"{x.Key}\": {{ \"id\": {x.Id}, \"notes\": \"Give a clear and Proper explanation why the candidate got this score based on {x.Key},avoiding overly optimistic or pessimistic scoring. \" }}"));
+
+        //            //string prompt = $@"
+        //            //    You are an Applicant Tracking System (ATS) evaluator. Use ONLY the explicit information provided below—do NOT assume anything not literally in the data.
+
+        //            //    Total Score: {totalScore}
+        //            //    Breakdown: {breakdownScores}
+        //            //    Result Rules: {resultRules}
+        //            //    Keywords (internal use only): {keywordHints}
+
+        //            //    Compare the following Job Description and Resume using keywords as scoring hints.
+        //            //    Score each category accordingly and compute:
+
+        //            //    - match_score = sum of section scores
+        //            //    - percentage = match_score / Total Score × 100
+        //            //    - Status = based on Result Rules
+
+        //            //    Return JSON only:
+        //            //    {{
+        //            //      ""match_score"": number,
+        //            //      ""percentage"": number,
+        //            //      ""remarks"": string,
+        //            //      ""Status"": one of [{statusInfo}],
+        //            //      ""breakdown"": {{ {breakdownSchema} }},
+        //            //      ""details"": {{ {detailSchema} }}
+        //            //    }}
+
+        //            //    JD: {jobText}
+        //            //    Resume: {resumeText}
+        //            //    temperature = 0.2
+        //            //    ".Trim();
+
+        //            // 3) Now build your prompt—notice there are no hard-coded rules anymore
+        //            string prompt = $@"
+        //                You are an Applicant Tracking System (ATS) evaluator. Use **only** the explicit data supplied—do **not** infer or assume anything extra.
+
+        //                Total Score: {totalScore}
+        //                Breakdown: {breakdownScores}
+        //                Result Rules: {resultRules}
+        //                Keywords (internal use only): {keywordHints}
+
+        //                CandidateProfile JSON:
+        //                {JsonConvert.SerializeObject(jObj["CandidateProfile"], Formatting.None)}
+
+        //                JD: {jobText}
+        //                Resume: {resumeText}
+
+        //                {scoringInstruction}
+
+        //                Compute:
+        //                - match_score = sum of section scores  
+        //                - percentage = match_score / Total Score × 100  
+        //                - Status = choose based on the Result Rules  
+
+        //                Return JSON only:
+        //                {{
+        //                  ""match_score"": number,
+        //                  ""percentage"": number,
+        //                  ""remarks"": string,
+        //                  ""Status"": one of [{string.Join(", ", resultStatusArray.Select(x => $"\"{x.Key}\""))}],
+
+        //                  ""breakdown"": {{ {breakdown} }},
+        //                  ""details"": {{ {details} }}
+        //                }}
+        //                temperature = 0.2
+        //                ".Trim();
+
+        //            result.Prompt = prompt;
+        //            result.TotalScore = totalScore;
+        //            result.BreakDownArray = breakDownArray;
+        //            result.ResultStatusArray = resultStatusArray;
+
+        //            return result;
+        //        }
+        //        catch (Exception ex)
+        //        {
+        //            result.Prompt = JsonConvert.SerializeObject(new
+        //            {
+        //                error = "An error occurred while generating Prompt For ATS.",
+        //                details = ex.Message
+        //            });
+
+        //            return result;
+        //        }
+        //    }
 
 
         //private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId, string jobText, string resumeText)
@@ -597,13 +730,112 @@ namespace ATS.API.Controllers
         //    }
         //}
 
+        //private async Task<ResumeScore> SaveAtsResponseToDb(string rawJson, int candidateId, decimal totalScoreFromPrompt, List<RatingItem> breakDownArrayFromPrompt)
+        //{
+        //    string cleanedJson = rawJson
+        //        .Replace("```json", "")
+        //        .Replace("```", "")
+        //        .Replace("json\r\n", "")
+        //        .Replace("json\n", "")
+        //        .Trim('`', ' ', '\r', '\n');
+
+        //    var jObject = JObject.Parse(cleanedJson);
+
+        //    int matchScore = jObject["match_score"]?.Value<int>() ?? 0;
+        //    string remarks = jObject["remarks"]?.ToString() ?? "";
+        //    string status = jObject["Status"]?.ToString() ?? "";
+
+        //    string detailsJson = jObject["details"]?.ToString(Newtonsoft.Json.Formatting.None) ?? "{}";
+
+        //    // Step 1: Parse obtained breakdown from GPT
+        //    var obtainedDict = JsonConvert.DeserializeObject<Dictionary<string, decimal>>(
+        //        jObject["breakdown"]?.ToString() ?? "{}"
+        //    );
+
+        //    // Step 2: Merge with total config to build enriched breakdown
+        //    decimal obtainedScore = 0;
+        //    var enrichedBreakdown = new Dictionary<string, object>();
+
+        //    foreach (var item in breakDownArrayFromPrompt)
+        //    {
+        //        string key = item.Key;
+        //        decimal total = 0;
+        //        decimal.TryParse(item.Value?.ToString(), out total);
+
+        //        decimal obtained = obtainedDict.ContainsKey(key) ? obtainedDict[key] : 0;
+        //        obtainedScore += obtained;
+
+        //        enrichedBreakdown[key] = new Dictionary<string, object>
+        //        {
+        //            { "Total", total },
+        //            { "Obtained", obtained }
+        //        };
+        //    }
+
+        //    //enrichedBreakdown["TotalScore"] = totalScoreFromPrompt;
+        //    //enrichedBreakdown["ObtainedScore"] = obtainedScore;
+
+        //    string breakdownJson = JsonConvert.SerializeObject(enrichedBreakdown, Formatting.None);
+
+        //    // Prepare resume score object
+        //    var resumeScore = new ResumeScore
+        //    {
+        //        MatchScore = matchScore,
+        //        CreatedAt = DateTime.UtcNow
+        //    };
+
+        //    int postId = 0, locId = 0, companyId = 0, departmentId = 0;
+
+        //    var parameters = new Dictionary<string, object>
+        //    {
+        //        { "@CandidateId", candidateId }
+        //    };
+
+        //    DataTable dt = await _dataService.GetDataAsync("SP_ATS_GETCANDIDATEDETAILS", parameters, _ConnectionString);
+        //    if (dt.Rows.Count > 0)
+        //    {
+        //        try
+        //        {
+        //            postId = Convert.ToInt32(dt.Rows[0]["ActualPostID"]);
+        //            locId = Convert.ToInt32(dt.Rows[0]["locId"]);
+        //            companyId = Convert.ToInt32(dt.Rows[0]["companyId"]);
+        //            departmentId = Convert.ToInt32(dt.Rows[0]["Departmentid"]);
+        //        }
+        //        catch { }
+        //    }
+
+        //    var InsertParameters = new Dictionary<string, object>
+        //    {
+        //        { "@CANDIDATE_ID", candidateId },
+        //        { "@POST_ID", postId },
+        //        { "@LOCATION_ID", locId },
+        //        { "@COMPANY_ID", companyId },
+        //        { "@DEPARTMENT_ID", departmentId },
+        //        { "@TOTAL_SCORE", totalScoreFromPrompt },              // from prompt
+        //        { "@REMARKS", remarks },
+        //        { "@STATUS", status },
+        //        { "@BREAKDOWN_JSON", breakdownJson },
+        //        { "@DETAILS_JSON", detailsJson },
+        //        { "@OBTAINED_SCORE", obtainedScore }                  // calculated
+        //    };
+
+        //    try
+        //    {
+        //        int result = await _dataService.AddAsync("SP_SAVE_ATS_SCORE", InsertParameters, _ConnectionString);
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        // Optionally log exception
+        //    }
+
+        //    return resumeScore;
+        //}
+
         private async Task<ResumeScore> SaveAtsResponseToDb(string rawJson, int candidateId, decimal totalScoreFromPrompt, List<RatingItem> breakDownArrayFromPrompt)
         {
             string cleanedJson = rawJson
                 .Replace("```json", "")
                 .Replace("```", "")
-                .Replace("json\r\n", "")
-                .Replace("json\n", "")
                 .Trim('`', ' ', '\r', '\n');
 
             var jObject = JObject.Parse(cleanedJson);
@@ -612,45 +844,51 @@ namespace ATS.API.Controllers
             string remarks = jObject["remarks"]?.ToString() ?? "";
             string status = jObject["Status"]?.ToString() ?? "";
 
-            string detailsJson = jObject["details"]?.ToString(Newtonsoft.Json.Formatting.None) ?? "{}";
+            // ✅ NEW: scores object
+            var scoresToken = jObject["scores"] as JObject;
+            if (scoresToken == null)
+                throw new Exception("Invalid ATS response: scores missing.");
 
-            // Step 1: Parse obtained breakdown from GPT
-            var obtainedDict = JsonConvert.DeserializeObject<Dictionary<string, decimal>>(
-                jObject["breakdown"]?.ToString() ?? "{}"
-            );
+            decimal obtainedScore = matchScore; // TRUST GPT TOTAL (single source of truth)
 
-            // Step 2: Merge with total config to build enriched breakdown
-            decimal obtainedScore = 0;
+            // -------- Build Breakdown JSON (Total + Obtained) --------
             var enrichedBreakdown = new Dictionary<string, object>();
+            var detailsDict = new Dictionary<string, object>();
 
             foreach (var item in breakDownArrayFromPrompt)
             {
                 string key = item.Key;
                 decimal total = 0;
-                decimal.TryParse(item.Value?.ToString(), out total);
+                decimal.TryParse(item.Value, out total);
 
-                decimal obtained = obtainedDict.ContainsKey(key) ? obtainedDict[key] : 0;
-                obtainedScore += obtained;
+                decimal obtained = scoresToken[key]?["obtained"]?.Value<decimal>() ?? 0;
+                string notes = scoresToken[key]?["notes"]?.ToString() ?? "";
+                int id = scoresToken[key]?["id"]?.Value<int>() ?? item.Id;
 
-                enrichedBreakdown[key] = new Dictionary<string, object>
+                enrichedBreakdown[key] = new
                 {
-                    { "Total", total },
-                    { "Obtained", obtained }
+                    Total = total,
+                    Obtained = obtained
+                };
+
+                detailsDict[key] = new
+                {
+                    id,
+                    notes
                 };
             }
 
-            //enrichedBreakdown["TotalScore"] = totalScoreFromPrompt;
-            //enrichedBreakdown["ObtainedScore"] = obtainedScore;
-
             string breakdownJson = JsonConvert.SerializeObject(enrichedBreakdown, Formatting.None);
+            string detailsJson = JsonConvert.SerializeObject(detailsDict, Formatting.None);
 
-            // Prepare resume score object
+            // -------- Prepare ResumeScore --------
             var resumeScore = new ResumeScore
             {
                 MatchScore = matchScore,
                 CreatedAt = DateTime.UtcNow
             };
 
+            // -------- Fetch Candidate Context --------
             int postId = 0, locId = 0, companyId = 0, departmentId = 0;
 
             var parameters = new Dictionary<string, object>
@@ -658,45 +896,43 @@ namespace ATS.API.Controllers
                 { "@CandidateId", candidateId }
             };
 
-            DataTable dt = await _dataService.GetDataAsync("SP_ATS_GETCANDIDATEDETAILS", parameters, _ConnectionString);
+            DataTable dt = await _dataService.GetDataAsync(
+                "SP_ATS_GETCANDIDATEDETAILS",
+                parameters,
+                _ConnectionString
+            );
+
             if (dt.Rows.Count > 0)
             {
-                try
-                {
-                    postId = Convert.ToInt32(dt.Rows[0]["ActualPostID"]);
-                    locId = Convert.ToInt32(dt.Rows[0]["locId"]);
-                    companyId = Convert.ToInt32(dt.Rows[0]["companyId"]);
-                    departmentId = Convert.ToInt32(dt.Rows[0]["Departmentid"]);
-                }
-                catch { }
+                postId = Convert.ToInt32(dt.Rows[0]["ActualPostID"]);
+                locId = Convert.ToInt32(dt.Rows[0]["locId"]);
+                companyId = Convert.ToInt32(dt.Rows[0]["companyId"]);
+                departmentId = Convert.ToInt32(dt.Rows[0]["Departmentid"]);
             }
 
-            var InsertParameters = new Dictionary<string, object>
+            // -------- Insert ATS Score --------
+            var insertParams = new Dictionary<string, object>
             {
                 { "@CANDIDATE_ID", candidateId },
                 { "@POST_ID", postId },
                 { "@LOCATION_ID", locId },
                 { "@COMPANY_ID", companyId },
                 { "@DEPARTMENT_ID", departmentId },
-                { "@TOTAL_SCORE", totalScoreFromPrompt },              // from prompt
+                { "@TOTAL_SCORE", totalScoreFromPrompt },
+                { "@OBTAINED_SCORE", obtainedScore },   // ✅ correct
                 { "@REMARKS", remarks },
                 { "@STATUS", status },
                 { "@BREAKDOWN_JSON", breakdownJson },
-                { "@DETAILS_JSON", detailsJson },
-                { "@OBTAINED_SCORE", obtainedScore }                  // calculated
+                { "@DETAILS_JSON", detailsJson }
             };
 
-            try
-            {
-                int result = await _dataService.AddAsync("SP_SAVE_ATS_SCORE", InsertParameters, _ConnectionString);
-            }
-            catch (Exception ex)
-            {
-                // Optionally log exception
-            }
+            int result = await _dataService.AddAsync(
+                "SP_SAVE_ATS_SCORE",
+                insertParams,
+                _ConnectionString
+            );
 
             return resumeScore;
         }
-
     }
 }

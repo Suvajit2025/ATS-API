@@ -141,29 +141,54 @@ namespace ATS.API.Controllers
                 string prompt = _OpenAI_CandidateResumePrompt.Replace("{ResumeDescription}", extractedText);
                 prompt = prompt + _CandidateResumeResponseTemplate;
                 var gptResponse = await _helper.SendMessageAsync(prompt, _GptAPI);
-
+                //var gptResponse = await _helper.SendMessageGemini(prompt);
                 // Parse GPT JSON string
                 JObject resume = JObject.Parse(gptResponse);
                 //JObject resume = JObject.Parse(jsonWrapper);
                 // Step: Check for valid pincode and enrich data
                 string pinCode = resume["PinCode"]?.ToString();
-                if (!string.IsNullOrWhiteSpace(pinCode) )
+                if (!string.IsNullOrWhiteSpace(pinCode))
                 {
-                    using var client = new HttpClient();
-                    var apiResponse = await client.GetStringAsync($"https://api.postalpincode.in/pincode/{pinCode}");
-                    var result = JArray.Parse(apiResponse);
-
-                    if (result[0]["Status"]?.ToString() == "Success")
+                    try
                     {
-                        var postOffice = result[0]["PostOffice"]?[0];
-                        if (postOffice != null)
+                        using var client = new HttpClient();
+                        var apiResponse = await client.GetStringAsync($"https://api.postalpincode.in/pincode/{pinCode}");
+                        var result = JArray.Parse(apiResponse);
+
+                        if (result[0]["Status"]?.ToString() == "Success")
                         {
-                            resume["District"] = postOffice["District"]?.ToString();
-                            resume["State"] = postOffice["State"]?.ToString();
-                            resume["Country"] = postOffice["Country"]?.ToString();
+                            var postOffice = result[0]["PostOffice"]?[0];
+                            if (postOffice != null)
+                            {
+                                resume["District"] = postOffice["District"]?.ToString();
+                                resume["State"] = postOffice["State"]?.ToString();
+                                resume["Country"] = postOffice["Country"]?.ToString();
+                            }
                         }
                     }
+                    catch (HttpRequestException)
+                    {
+                        // 🔹 API not reachable (network/SSL issue) → ignore, continue
+                        resume["District"] = "";
+                        resume["State"] = "";
+                        resume["Country"] = "";
+                    }
+                    catch (TaskCanceledException)
+                    {
+                        // 🔹 Timeout → ignore
+                        resume["District"] = "";
+                        resume["State"] = "";
+                        resume["Country"] = "";
+                    }
+                    catch (Exception)
+                    {
+                        // 🔹 Any other unexpected error → ignore
+                        resume["District"] = "";
+                        resume["State"] = "";
+                        resume["Country"] = "";
+                    }
                 }
+
 
                 // Return the enriched JSON response
                 return Ok(new { gptResponse = resume.ToString(Formatting.Indented) });
@@ -199,7 +224,7 @@ namespace ATS.API.Controllers
                 prompt = prompt + _OpenAIJobdescriptiontemp;
 
                 var gptResponse = await _helper.SendMessageAsync(prompt, _GptAPI);
-
+                //var gptResponse = await _helper.SendMessageGemini(prompt);
                 if (!string.IsNullOrWhiteSpace(gptResponse))
                 {
 

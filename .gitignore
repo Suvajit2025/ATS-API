@@ -40,7 +40,7 @@ ScaffoldingReadMe.txt
 ~$*
 *~
 CodeCoverage/
-
+Register/
 # MSBuild Binary and Structured Log
 *.binlog
 
@@ -52,3 +52,18 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+# Visual Studio files
+.vs/
+[Vv]isual [Ss]tudio [Cc]ode/
+.vscode/
+*.user
+*.userosscache
+*.sln.docstates
+
+# User-specific files
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.opendb
+*.dbmdl

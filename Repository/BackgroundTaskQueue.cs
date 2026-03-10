@@ -3,38 +3,6 @@ using System.Threading.Channels;
 
 namespace ATS.API.Repository
 {
-    //public class BackgroundTaskQueue : IBackgroundTaskQueue
-    //{
-    //    private readonly Channel<Func<CancellationToken, Task>> _queue;
-
-    //    public BackgroundTaskQueue()
-    //    {
-    //        _queue = Channel.CreateUnbounded<Func<CancellationToken, Task>>();
-    //    }
-
-    //    // Enqueue tasks to be processed
-    //    public async Task QueueBackgroundWorkItem(Func<CancellationToken, Task> workItem)
-    //    {
-    //        await _queue.Writer.WriteAsync(workItem);
-    //    }
-
-    //    // Process the tasks from the queue
-    //    public async Task ProcessQueueAsync(CancellationToken cancellationToken)
-    //    {
-    //        await foreach (var workItem in _queue.Reader.ReadAllAsync(cancellationToken))
-    //        {
-    //            try
-    //            {
-    //                await workItem(cancellationToken);  // Execute the background task
-    //            }
-    //            catch (Exception ex)
-    //            {
-    //                // Log error if something goes wrong with the task
-    //                Console.WriteLine($"Error processing background task: {ex.Message}");
-    //            }
-    //        }
-    //    }
-    //}
     public class BackgroundTaskQueue : IBackgroundTaskQueue
     {
         private readonly Channel<Func<CancellationToken, Task>> _queue;
@@ -42,46 +10,46 @@ namespace ATS.API.Repository
 
         public BackgroundTaskQueue(int maxConcurrency)
         {
-            _queue = Channel.CreateUnbounded<Func<CancellationToken, Task>>();
             _maxConcurrency = maxConcurrency;
+
+            _queue = Channel.CreateBounded<Func<CancellationToken, Task>>(
+                new BoundedChannelOptions(2000)
+                {
+                    FullMode = BoundedChannelFullMode.Wait
+                });
         }
 
         public async Task QueueBackgroundWorkItem(Func<CancellationToken, Task> workItem)
         {
-            if (workItem == null) throw new ArgumentNullException(nameof(workItem));
+            if (workItem == null)
+                throw new ArgumentNullException(nameof(workItem));
+
             await _queue.Writer.WriteAsync(workItem);
         }
 
         public async Task ProcessQueueAsync(CancellationToken cancellationToken)
         {
-            var semaphore = new SemaphoreSlim(_maxConcurrency);
-            var tasks = new List<Task>();
+            var workers = new List<Task>();
 
-            await foreach (var workItem in _queue.Reader.ReadAllAsync(cancellationToken))
+            for (int i = 0; i < _maxConcurrency; i++)
             {
-                await semaphore.WaitAsync(cancellationToken);
-
-                var task = Task.Run(async () =>
+                workers.Add(Task.Run(async () =>
                 {
-                    try
+                    await foreach (var workItem in _queue.Reader.ReadAllAsync(cancellationToken))
                     {
-                        await workItem(cancellationToken);
+                        try
+                        {
+                            await workItem(cancellationToken);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error processing background task: {ex.Message}");
+                        }
                     }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error processing background task: {ex.Message}");
-                    }
-                    finally
-                    {
-                        semaphore.Release();
-                    }
-                }, cancellationToken);
-
-                tasks.Add(task);
+                }, cancellationToken));
             }
 
-            await Task.WhenAll(tasks);
+            await Task.WhenAll(workers);
         }
     }
-  
 }

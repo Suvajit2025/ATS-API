@@ -6,4 +6,21 @@
     <History>True|2025-07-24T09:34:20.9799185Z||;</History>
     <LastFailureDetails />
   </PropertyGroup>
+  <ItemGroup>
+    <File Include="ML/MLOCRModel.consumption.cs">
+      <publishTime>07/25/2025 11:44:51</publishTime>
+    </File>
+    <File Include="ML/MLOCRModel.evaluate.cs">
+      <publishTime>07/25/2025 11:44:51</publishTime>
+    </File>
+    <File Include="ML/MLOCRModel.mbconfig">
+      <publishTime>07/25/2025 11:44:59</publishTime>
+    </File>
+    <File Include="ML/MLOCRModel.mlnet">
+      <publishTime>07/25/2025 11:44:48</publishTime>
+    </File>
+    <File Include="ML/MLOCRModel.training.cs">
+      <publishTime>07/25/2025 11:44:51</publishTime>
+    </File>
+  </ItemGroup>
 </Project>

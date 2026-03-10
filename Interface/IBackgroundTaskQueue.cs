@@ -1,9 +1,5 @@
 ﻿namespace ATS.API.Interface
-{
-    //public interface IBackgroundTaskQueue
-    //{
-    //    Task QueueBackgroundWorkItem(Func<CancellationToken, Task> workItem);
-    //}
+{ 
     public interface IBackgroundTaskQueue
     {
         Task QueueBackgroundWorkItem(Func<CancellationToken, Task> workItem);
