@@ -16,9 +16,10 @@ namespace ATS.API.Services
         {
             _dataService = dataService;
             _config = config;
-            _saasConnection =_config.GetConnectionString("DBConnSaaSEssP");
+            _saasConnection =_config.GetConnectionString("DBConnSaaSEssP") ?? throw new Exception("Connection string not found");
         }
 
+        //This is for All Tenant Details who are using ETimeTrack, not the tenant details of our application.
         public async Task<DataTable> GetETimeTrackTenantsAsync()
         {
             var parameters = new Dictionary<string, object> {};
@@ -26,6 +27,7 @@ namespace ATS.API.Services
              
         }
 
+        //This is for fetching device logs from Etimetreaklite for a tenant in batches for processing raw punches and creating daily attendance.
         public async Task<DataTable> GetDeviceLogsAsync(Guid tenantId, int offset, int batchSize)
         {
             var param = new Dictionary<string, object>
@@ -38,7 +40,7 @@ namespace ATS.API.Services
             return await _dataService.GetDataAsync("PRC_Get_SaaS_Attandance_ETimeTrackTenants_DeviceLogs",param,_saasConnection);
         }
 
-
+        // This is for inserting raw punch when we receive a punch from Attendance Listener device ,which will be later processed to create daily attendance.
         public async Task<long> InsertRawPunchAsync(string SN,string employeeId,DateTime punchTime,string rawPayload,string punchState, String DeviceType)
         {
             var param = new Dictionary<string, object>
@@ -60,6 +62,8 @@ namespace ATS.API.Services
 
             return 0;
         }
+
+        // This is for bulk inserting raw punches fetched from ETimeTrackLite device logs, which will be later processed to create daily attendance.
         public async Task<DataTable> BulkInsertRawPunchAsync(DataTable table)
         {
             using var conn = new SqlConnection(_saasConnection);
@@ -67,16 +71,24 @@ namespace ATS.API.Services
 
             cmd.CommandType = CommandType.StoredProcedure;
 
-            var param = cmd.Parameters.AddWithValue("@Punches", table);
-            param.SqlDbType = SqlDbType.Structured;
+            var param = cmd.Parameters.Add("@Punches", SqlDbType.Structured);
+            param.Value = table;
             param.TypeName = "dbo.RawPunchTVP";
 
             var dt = new DataTable();
 
             using var adapter = new SqlDataAdapter(cmd);
 
-            await conn.OpenAsync();
-            adapter.Fill(dt);
+            try
+            {
+                await conn.OpenAsync();
+                adapter.Fill(dt);
+            }
+            catch (Exception ex)
+            {
+                // log properly
+                throw;
+            }
 
             return dt; // contains RawPunchIds
         }
@@ -91,19 +103,29 @@ namespace ATS.API.Services
             await _dataService.AddAsync("PRC_Update_ETimeTrackLastSync",param,_saasConnection);
         }
 
-        public Task<long> ProcessDailyAttendance(long rawPunchId)
+        public async Task<long> ProcessDailyAttendance(long rawPunchId)
         {
-            long dt = 0;
-            return Task.FromResult(dt);
+            var param = new Dictionary<string, object>
+            {
+                { "@RawPunchId", rawPunchId }
+            };
+
+            return await _dataService.AddAsync("SP_SaaS_Attendance_Punch_Process", param, _saasConnection);
+
         }
+        // This is for fetching unprocessed punches which are inserted through InsertRawPunchAsync or BulkInsertRawPunchAsync or InsertRawPunchMobileAsync,
+        // which are yet to be processed to create daily attendance.and IsProcessed = 0 in RawPunch table.
         public async Task<DataTable> GetUnprocessedPunchesAsync()
         {
             var param = new Dictionary<string, object>{};
-            // return await _dataService.GetDataAsync("PRC_Get_Unprocessed_RawPunch",param,_saasConnection);
-            DataTable dt = new DataTable();
-            return dt;
+            return await _dataService.GetDataAsync("PRC_Get_Unprocessed_RawPunch",param,_saasConnection);
+            //DataTable dt = new DataTable();
+            //return dt;
         }
-
+        // This is for creating daily attendance for all tenants in batches.
+        // It will be called from a scheduled background service at midnight everyday.
+        // For each tenant, it will fetch employees in batches and create daily attendance  rows for them for the day.
+        // This will help in later processing punches to fill those daily attendance rows with actual punch in and punch out times.
         public async Task CreateDailyAttendanceForAllTenants(int employeeBatchSize,int tenantParallelWorkers,CancellationToken cancellationToken = default)
         {
             var tenants = await GetTenantsAsync();
@@ -120,18 +142,16 @@ namespace ATS.API.Services
             });
         }
 
-
+        // Helper method to fetch tenant details.
+        // This is used in CreateDailyAttendanceForAllTenants to get the list of tenants for which we need to create daily attendance.
+        //Add a DeviceUserIdField in the MST_Admin_Company table for Facting Which columns in EMpbasic is Used as USERID in ETimeTrack .
         private async Task<List<TenantInfo>> GetTenantsAsync()
         {
             var tenants = new List<TenantInfo>();
 
             var parameters = new Dictionary<string, object>();
 
-            DataTable dt = await _dataService.GetDataAsync(
-                "PRC_GetActiveTenants",
-                parameters,
-                _saasConnection
-            );
+            DataTable dt = await _dataService.GetDataAsync("PRC_GetActiveTenants",parameters,_saasConnection);
 
             foreach (DataRow row in dt.Rows)
             {
@@ -147,7 +167,7 @@ namespace ATS.API.Services
             return tenants;
         }
 
-
+        // Helper method to create daily attendance for a tenant in batches.
         private async Task CreateDailyAttendanceForTenant(Guid tenantId,int batchSize,CancellationToken cancellationToken)
         {
             int offset = 0;
@@ -161,11 +181,7 @@ namespace ATS.API.Services
                     { "@BatchSize", batchSize }
                 };
 
-                DataTable result = await _dataService.GetDataAsync(
-                    "PRC_GetTenantEmployeesBatch",
-                    parameters,
-                    _saasConnection
-                );
+                DataTable result = await _dataService.GetDataAsync("PRC_GetTenantEmployeesBatch",parameters,_saasConnection);
 
                 if (result.Rows.Count == 0)
                     break;
@@ -180,16 +196,18 @@ namespace ATS.API.Services
                     var insertParams = new Dictionary<string, object>
                     {
                         { "@TenantId", tenantId },
-                        { "@EmployeeId", employeeId }
+                        { "@EmployeeId", employeeId },
+                        { "@AttendanceDate", DateTime.Now.Date }
                     };
 
-                    await _dataService.AddAsync("PRC_CreateDailyAttendanceRow",insertParams,_saasConnection);
+                    await _dataService.AddAsync("SP_SaaS_Attendance_Daily_Prepare", insertParams,_saasConnection);
                 }
 
                 offset += batchSize;
             }
         }
-
+        // This is for inserting raw punch when we receive a punch from Mobile device through API WebHook,
+        // which will be later processed to create daily attendance.
         public async Task<long> InsertRawPunchMobileAsync(string TenantId, string EmployeeId, DateTime PunchTime, string Direction, string PunchSource, string DeviceName, string rawPayload, decimal Latitude, decimal Longitude, string LocationAddress)
         {
             var param = new Dictionary<string, object>

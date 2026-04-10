@@ -5,11 +5,21 @@ using ATS.API.Services;
 using CommonUtility.DataAccess;
 using CommonUtility.Interface;
 using CommonUtility.Repository;
+using DinkToPdf;
+using DinkToPdf.Contracts;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
+using System.Runtime.InteropServices;
+
+// 
+NativeLibrary.Load(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "libwkhtmltox.dll"));
+
 
 var builder = WebApplication.CreateBuilder(args);
-
+// --- ADD THIS SECTION ---
+// This tells .NET to use the SynchronizedConverter whenever IConverter is requested
+builder.Services.AddSingleton(typeof(IConverter), new SynchronizedConverter(new PdfTools()));
+// ------------------------
 // Controllers
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
@@ -82,7 +92,7 @@ builder.Services.Configure<AttendanceJobSettings>(
     builder.Configuration.GetSection("AttendanceJobs")
 );
 
-// Common Services
+//// Common Services
 builder.Services.AddScoped<ICommonService, CommonServiceRepository>();
 builder.Services.AddScoped<IEncryptDecrypt, EncryptDecryptRepository>();
 builder.Services.AddScoped<IConversion, ConversionRepository>();
@@ -100,7 +110,7 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("https://recruitment.mendine.co.in")
+        policy.WithOrigins("https://recruitment.mendine.co.in", "https://iehrms.iecsl.in/")
               .AllowAnyHeader()
               .AllowAnyMethod();
     });

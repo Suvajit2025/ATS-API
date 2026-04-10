@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using Serilog;
 using System.Data;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -54,6 +55,11 @@ namespace ATS.API.Controllers
                     return NotFound(new { message = "No resume found for the given username." });
 
                 DataRow row = dt.Rows[0];
+                if (row["resumefile"] == DBNull.Value)
+                {
+                    return NotFound(new { message = "Resume file is empty." });
+                }
+
                 byte[] fileData = (byte[])row["resumefile"];
                 string fileName = row["Name"].ToString();
                 string contentType = row["ContentType"].ToString();
@@ -70,7 +76,8 @@ namespace ATS.API.Controllers
                 if (!Directory.Exists(fileFolder))
                     Directory.CreateDirectory(fileFolder);
                 //string tempFileName = $"Candidate_{candidateId}_{Guid.NewGuid()}{fileExtension}";
-                string savedFileName = $"CV_{CandidateName}_{candidateId}{fileExtension}";
+                string safeName = Regex.Replace(CandidateName, @"[^\w\d_-]", "_");
+                string savedFileName = $"CV_{safeName}_{candidateId}{fileExtension}";
                 string savedFilePath = Path.Combine(fileFolder, savedFileName);
                 string fileUrl = savedFileName;
 
@@ -100,7 +107,12 @@ namespace ATS.API.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new { error = ex.Message });
+                Log.Error(ex, "Error in ATSScore API for username: {Username}", username);
+
+                return StatusCode(500, new
+                {
+                    error = "Internal server error. Please check logs."
+                });
             }
         }
         private async Task CandidateProfile(string filePath, long candidateId)
