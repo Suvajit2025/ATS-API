@@ -10,7 +10,7 @@ namespace ATS.API.Repository
         Task UpdateLastSyncAsync(Guid tenantId, DateTime lastSyncTime);
         Task<DataTable> BulkInsertRawPunchAsync(DataTable table);
         Task<long> ProcessDailyAttendance(long rawPunchId);
-        Task<DataTable> GetUnprocessedPunchesAsync();
+        Task<DataTable> GetUnprocessedPunchesAsync(int batchSize);
         Task CreateDailyAttendanceForAllTenants(int employeeBatchSize,int tenantParallelWorkers,CancellationToken cancellationToken = default);
         Task<long> InsertRawPunchMobileAsync(string TenantId, string EmployeeId, DateTime PunchTime,string Direction,string PunchSource,string DeviceName, string rawPayload,decimal Latitude,decimal Longitude,string LocationAddress);
     }

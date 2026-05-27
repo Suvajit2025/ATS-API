@@ -79,18 +79,18 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
 .AddEntityFrameworkStores<ApplicationDbContext>()
 .AddDefaultTokenProviders();
 
-// Repository
-builder.Services.AddScoped<IETimeTrackRepository, ETimeTrackRepository>();
+//// Repository
+//builder.Services.AddScoped<IETimeTrackRepository, ETimeTrackRepository>();
 
 // Hosted Services
-builder.Services.AddHostedService<ETimeTrackCollectorService>();
-builder.Services.AddHostedService<RawPunchFallbackService>();
-builder.Services.AddHostedService<MidnightAttendanceService>();
+//builder.Services.AddHostedService<ETimeTrackCollectorService>();
+//builder.Services.AddHostedService<RawPunchFallbackService>();
+//builder.Services.AddHostedService<MidnightAttendanceService>();
 
 // Bind Attendance Job Settings
-builder.Services.Configure<AttendanceJobSettings>(
-    builder.Configuration.GetSection("AttendanceJobs")
-);
+//builder.Services.Configure<AttendanceJobSettings>(
+//    builder.Configuration.GetSection("AttendanceJobs")
+//);
 
 //// Common Services
 builder.Services.AddScoped<ICommonService, CommonServiceRepository>();

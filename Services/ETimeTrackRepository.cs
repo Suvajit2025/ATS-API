@@ -115,12 +115,14 @@ namespace ATS.API.Services
         }
         // This is for fetching unprocessed punches which are inserted through InsertRawPunchAsync or BulkInsertRawPunchAsync or InsertRawPunchMobileAsync,
         // which are yet to be processed to create daily attendance.and IsProcessed = 0 in RawPunch table.
-        public async Task<DataTable> GetUnprocessedPunchesAsync()
+        public async Task<DataTable> GetUnprocessedPunchesAsync(int batchSize)
         {
-            var param = new Dictionary<string, object>{};
+            var param = new Dictionary<string, object>
+            {
+                { "@BatchSize", batchSize }
+            };
+
             return await _dataService.GetDataAsync("PRC_Get_Unprocessed_RawPunch",param,_saasConnection);
-            //DataTable dt = new DataTable();
-            //return dt;
         }
         // This is for creating daily attendance for all tenants in batches.
         // It will be called from a scheduled background service at midnight everyday.
