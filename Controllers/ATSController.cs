@@ -1,13 +1,15 @@
 ﻿using ATS.API.Interface;
 using ATS.API.Models;
+using ATS.API.Services.MailService;
 using CommonUtility.Interface;
+using DocumentFormat.OpenXml.Bibliography;
+using DocumentFormat.OpenXml.Drawing;
 using DocumentFormat.OpenXml.Drawing.Diagrams;
 using DocumentFormat.OpenXml.Spreadsheet;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
-using Serilog;
 using System.Data;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -22,24 +24,107 @@ namespace ATS.API.Controllers
         private readonly ICommonService _commonService;
         private readonly IDataService _dataService;
         private readonly string _ConnectionString;
+        private readonly string _ConnectionStringsaas;
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly IATSHelper _helper;
+        private readonly MailService _mailService;
+
         public string _GptAPI;
         public string _ResumeSavePath;
         public string _ResumeSaveDB;
 
-        public ATSController(ICommonService commonService, IDataService dataService, IHttpContextAccessor httpContextAccessor, IConfiguration configuration, IATSHelper aTSHelper, IBackgroundTaskQueue backgroundTaskQueue)
+        public ATSController(ICommonService commonService, IDataService dataService, IHttpContextAccessor httpContextAccessor, IConfiguration configuration, IATSHelper aTSHelper, IBackgroundTaskQueue backgroundTaskQueue,MailService mailService)
         {
             _commonService = commonService;
             _dataService = dataService;
             _ConnectionString = configuration.GetConnectionString("DBConnRecruitment");
+            _ConnectionStringsaas = configuration.GetConnectionString("DBConnRecruitmentDemo");
             _httpContextAccessor = httpContextAccessor;
             _helper = aTSHelper;
             _backgroundTaskQueue = backgroundTaskQueue;
             _GptAPI = configuration["GptAPI"];
             _ResumeSavePath=configuration["ResumeSettings:SavePath"];
             _ResumeSaveDB = configuration["ResumeSettings:fileUrl"];
+            _mailService = mailService;
         }
+        //
+
+        [HttpPost("send-lms-exam-link-candidate")]
+        public async Task<IActionResult> SendLmsExamLink([FromQuery] long candidateId)
+        {
+            try
+            {
+                var param = new Dictionary<string, object>
+        {
+            { "@CandidateID", candidateId }
+        };
+
+                DataTable dt = await _dataService.GetDataAsync(
+                    "PRC_SEND_CANDIDATE_EXAM_LINK",
+                    param,
+                    _ConnectionString);
+
+                if (dt == null || dt.Rows.Count == 0)
+                {
+                    return NotFound(new
+                    {
+                        success = false,
+                        message = "No record found for the candidate."
+                    });
+                }
+
+                DataRow row = dt.Rows[0];
+
+                string email = Convert.ToString(row["MailTo"]) ?? string.Empty;
+                string mailBody = Convert.ToString(row["MailBody"]) ?? string.Empty;
+                string subject = Convert.ToString(row["Subject"]) ?? "LMS Exam Link";
+
+                if (string.IsNullOrWhiteSpace(email))
+                {
+                    return BadRequest(new
+                    {
+                        success = false,
+                        message = "Candidate email address not found."
+                    });
+                }
+
+                bool mailSent = await _mailService.SendMailAsync(
+                    toEmail: email,
+                    fromEmail: null,
+                    bodyHtml: mailBody,
+                    subject: subject,
+                    attachmentBytes: null,
+                    fileNameWithoutExt: null
+                );
+
+                if (!mailSent)
+                {
+                    return StatusCode(500, new
+                    {
+                        success = false,
+                        message = "Failed to send email."
+                    });
+                }
+
+                return Ok(new
+                {
+                    success = true,
+                    message = "Exam link sent successfully.",
+                    email = email
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    success = false,
+                    message = ex.Message
+                });
+            }
+        }
+
+
+
         [HttpPost("ATSScore")]
         public async Task<IActionResult> AtsScoreByID(string username)
         {
@@ -55,11 +140,6 @@ namespace ATS.API.Controllers
                     return NotFound(new { message = "No resume found for the given username." });
 
                 DataRow row = dt.Rows[0];
-                if (row["resumefile"] == DBNull.Value)
-                {
-                    return NotFound(new { message = "Resume file is empty." });
-                }
-
                 byte[] fileData = (byte[])row["resumefile"];
                 string fileName = row["Name"].ToString();
                 string contentType = row["ContentType"].ToString();
@@ -71,14 +151,13 @@ namespace ATS.API.Controllers
                     : _helper.GetExtensionFromContentType(contentType);
 
                 string relativePath = _ResumeSavePath;
-                string fileFolder = Path.Combine(Directory.GetCurrentDirectory(), relativePath);
+                string fileFolder = System.IO.Path.Combine(Directory.GetCurrentDirectory(), relativePath);
 
                 if (!Directory.Exists(fileFolder))
                     Directory.CreateDirectory(fileFolder);
                 //string tempFileName = $"Candidate_{candidateId}_{Guid.NewGuid()}{fileExtension}";
-                string safeName = Regex.Replace(CandidateName, @"[^\w\d_-]", "_");
-                string savedFileName = $"CV_{safeName}_{candidateId}{fileExtension}";
-                string savedFilePath = Path.Combine(fileFolder, savedFileName);
+                string savedFileName = $"CV_{CandidateName}_{candidateId}{fileExtension}";
+                string savedFilePath = System.IO.Path.Combine(fileFolder, savedFileName);
                 string fileUrl = savedFileName;
 
                 int SaveResume = await _dataService.AddAsync("SP_SAVE_RESUMEURL", new Dictionary<string, object>
@@ -107,14 +186,10 @@ namespace ATS.API.Controllers
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "Error in ATSScore API for username: {Username}", username);
-
-                return StatusCode(500, new
-                {
-                    error = "Internal server error. Please check logs."
-                });
+                return StatusCode(500, new { error = ex.Message });
             }
         }
+
         private async Task CandidateProfile(string filePath, long candidateId)
         {
             try
@@ -855,6 +930,16 @@ namespace ATS.API.Controllers
             int matchScore = jObject["match_score"]?.Value<int>() ?? 0;
             string remarks = jObject["remarks"]?.ToString() ?? "";
             string status = jObject["Status"]?.ToString() ?? "";
+
+            if (status != null &&
+              !string.IsNullOrWhiteSpace(status) &&
+              status.Equals("Shortlisted", StringComparison.OrdinalIgnoreCase))
+            {
+                // Call LMS Exam Link API Method
+                await SendLmsExamLink(candidateId);
+
+                Console.WriteLine("LMS Exam Link sent successfully.");
+            }
 
             // ✅ NEW: scores object
             var scoresToken = jObject["scores"] as JObject;

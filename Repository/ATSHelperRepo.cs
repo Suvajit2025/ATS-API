@@ -117,6 +117,78 @@ namespace ATS.API.Repository
 
         }
 
+        public async Task<string> SendMessageGemini(string content)
+        {
+            string geminiApiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+            string geminiApiKey = "AIzaSyCG69mgR1cIQCi-C7xdHkg2FnQNkXrLGd0"; // Remember to replace!
+            using var client = new HttpClient();
+            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            var requestBody = new
+            {
+                contents = new[]
+                {
+            new
+            {
+                parts = new[]
+                {
+                    new { text = content }
+                }
+            }
+                }
+            };
+
+            string jsonRequestBody = JsonConvert.SerializeObject(requestBody);
+            var stringContent = new StringContent(jsonRequestBody, Encoding.UTF8, "application/json");
+
+            var uriBuilder = new UriBuilder(geminiApiUrl);
+            uriBuilder.Query = $"key={geminiApiKey}";
+            var requestUri = uriBuilder.Uri;
+
+            try
+            {
+                var response = await client.PostAsync(requestUri, stringContent);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorResult = await response.Content.ReadAsStringAsync();
+                    Console.WriteLine($"Gemini API failed: {response.StatusCode}, Body: {errorResult}");
+                    return null;
+                }
+
+                var result = await response.Content.ReadAsStringAsync();
+                dynamic responseData = JsonConvert.DeserializeObject(result);
+
+                // Adjust the parsing based on the actual JSON response structure from Gemini
+                if (responseData?.candidates != null && responseData.candidates.Count > 0)
+                {
+                    var firstCandidate = responseData.candidates[0];
+                    if (firstCandidate?.content?.parts != null && firstCandidate.content.parts.Count > 0)
+                    {
+                        return firstCandidate.content.parts[0]?.text?.ToString();
+                    }
+                }
+
+                Console.WriteLine("No 'candidates' found in the Gemini API response.");
+                return null;
+            }
+            catch (HttpRequestException e)
+            {
+                Console.WriteLine($"Error during Gemini API request: {e.Message}");
+                return null;
+            }
+            catch (JsonException e)
+            {
+                Console.WriteLine($"Error deserializing Gemini API response: {e.Message}");
+                return null;
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"An unexpected error occurred: {e.Message}");
+                return null;
+            }
+        }
+
         public async Task SendAtsScoreRequest(string username, string atsURL)
         {
             // Build the URL for the POST request, appending the username as a query parameter

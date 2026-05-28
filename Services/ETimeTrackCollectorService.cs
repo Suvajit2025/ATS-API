@@ -64,7 +64,10 @@ namespace ATS.API.Services
 
                 while (true)
                 {
-                    var logs = await repo.GetDeviceLogsAsync(tenantId,offset,batchSize);
+                    var logs = await repo.GetDeviceLogsAsync(
+                        tenantId,
+                        offset,
+                        batchSize);
 
                     if (logs.Rows.Count == 0)
                         break;
@@ -107,23 +110,15 @@ namespace ATS.API.Services
                     foreach (DataRow r in insertedRows.Rows)
                     {
                         long rawPunchId = Convert.ToInt64(r["RawPunchId"]);
-                        long capturedId = rawPunchId;
 
-                        await _taskQueue.QueueBackgroundWorkItem(async token =>
+                        _taskQueue.QueueBackgroundWorkItem(async token =>
                         {
-                            try
-                            {
-                                using var innerScope = _scopeFactory.CreateScope();
+                            using var scope = _scopeFactory.CreateScope();
 
-                                var innerRepo = innerScope.ServiceProvider
-                                    .GetRequiredService<IETimeTrackRepository>();
+                            var bgRepo = scope.ServiceProvider
+                                .GetRequiredService<IETimeTrackRepository>();
 
-                                await innerRepo.ProcessDailyAttendance(capturedId);
-                            }
-                            catch (Exception ex)
-                            {
-                                _logger.LogError(ex, $"Error processing RawPunchId: {capturedId}");
-                            }
+                            await bgRepo.ProcessDailyAttendance(rawPunchId);
                         });
                     }
 

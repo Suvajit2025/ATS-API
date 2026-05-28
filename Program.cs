@@ -2,6 +2,7 @@
 using ATS.API.Models;
 using ATS.API.Repository;
 using ATS.API.Services;
+using ATS.API.Services.MailService;
 using CommonUtility.DataAccess;
 using CommonUtility.Interface;
 using CommonUtility.Repository;
@@ -11,7 +12,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using System.Runtime.InteropServices;
 
-// 
+// Add this at the very top of Program.cs
 NativeLibrary.Load(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "libwkhtmltox.dll"));
 
 
@@ -79,20 +80,21 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
 .AddEntityFrameworkStores<ApplicationDbContext>()
 .AddDefaultTokenProviders();
 
-//// Repository
-//builder.Services.AddScoped<IETimeTrackRepository, ETimeTrackRepository>();
+// Repository
+builder.Services.AddScoped<IETimeTrackRepository, ETimeTrackRepository>();
+builder.Services.AddScoped<MailService>();
 
 // Hosted Services
-//builder.Services.AddHostedService<ETimeTrackCollectorService>();
-//builder.Services.AddHostedService<RawPunchFallbackService>();
-//builder.Services.AddHostedService<MidnightAttendanceService>();
+builder.Services.AddHostedService<ETimeTrackCollectorService>();
+builder.Services.AddHostedService<RawPunchFallbackService>();
+builder.Services.AddHostedService<MidnightAttendanceService>();
 
 // Bind Attendance Job Settings
-//builder.Services.Configure<AttendanceJobSettings>(
-//    builder.Configuration.GetSection("AttendanceJobs")
-//);
+builder.Services.Configure<AttendanceJobSettings>(
+    builder.Configuration.GetSection("AttendanceJobs")
+);
 
-//// Common Services
+// Common Services
 builder.Services.AddScoped<ICommonService, CommonServiceRepository>();
 builder.Services.AddScoped<IEncryptDecrypt, EncryptDecryptRepository>();
 builder.Services.AddScoped<IConversion, ConversionRepository>();
@@ -110,7 +112,7 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("https://recruitment.mendine.co.in", "https://iehrms.iecsl.in/")
+        policy.WithOrigins("https://recruitment.mendine.co.in")
               .AllowAnyHeader()
               .AllowAnyMethod();
     });

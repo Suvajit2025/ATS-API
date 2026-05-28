@@ -694,7 +694,6 @@ namespace ATS.API.Controllers
                 var gptResponse = await _helper.SendMessageAsync(promptResult.Prompt, _GptAPI);
 
 
-
                 if (!string.IsNullOrWhiteSpace(gptResponse))
                 {
                     var resumeScore = await SaveAtsResponseToDb(gptResponse, candidateId, promptResult.TotalScore, promptResult.BreakDownArray);
@@ -775,136 +774,136 @@ namespace ATS.API.Controllers
                 });
             }
         }
-        //private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId, string jobText, string resumeText)
-        //{
-        //    var result = new AtsPromptResult();
+        private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId,string jobText,string resumeText)
+        {
+            var result = new AtsPromptResult();
 
-        //    try
-        //    {
-        //        string profileJson = string.Empty;
+            try
+            {
+                string profileJson = string.Empty;
 
-        //        var parameters = new Dictionary<string, object>
-        //        {
-        //            { "@CandidateId", candidateId }
-        //        };
+                var parameters = new Dictionary<string, object>
+        {
+            { "@CandidateId", candidateId }
+        };
 
-        //        DataTable dt = await _dataService.GetDataAsync(
-        //            "SP_ATS_PROMT",
-        //            parameters,
-        //            _ConnectionString
-        //        );
+                DataTable dt = await _dataService.GetDataAsync(
+                    "SP_ATS_PROMT",
+                    parameters,
+                    _ConnectionString
+                );
 
-        //        if (dt.Rows.Count == 0 || dt.Rows[0]["AtsPrompt"] == DBNull.Value)
-        //        {
-        //            result.Prompt = JsonConvert.SerializeObject(
-        //                new { error = "No data returned from stored procedure." }
-        //            );
-        //            return result;
-        //        }
+                if (dt.Rows.Count == 0 || dt.Rows[0]["AtsPrompt"] == DBNull.Value)
+                {
+                    result.Prompt = JsonConvert.SerializeObject(
+                        new { error = "No data returned from stored procedure." }
+                    );
+                    return result;
+                }
 
-        //        profileJson = dt.Rows[0]["AtsPrompt"].ToString();
-        //        var jObj = JObject.Parse(profileJson);
+                profileJson = dt.Rows[0]["AtsPrompt"].ToString();
+                var jObj = JObject.Parse(profileJson);
 
-        //        decimal totalScore = jObj["Total Score"]?.Value<decimal>() ?? 100;
+                decimal totalScore = jObj["Total Score"]?.Value<decimal>() ?? 100;
 
-        //        var breakDownArray = JsonConvert.DeserializeObject<List<RatingItem>>(
-        //            jObj["BreakDownScore"]?.ToString() ?? "[]"
-        //        );
+                var breakDownArray = JsonConvert.DeserializeObject<List<RatingItem>>(
+                    jObj["BreakDownScore"]?.ToString() ?? "[]"
+                );
 
-        //        var resultStatusArray = JsonConvert.DeserializeObject<List<ResultStatusItem>>(
-        //            jObj["Result Status"]?.ToString() ?? "[]"
-        //        );
+                var resultStatusArray = JsonConvert.DeserializeObject<List<ResultStatusItem>>(
+                    jObj["Result Status"]?.ToString() ?? "[]"
+                );
 
-        //        // -------- Prompt helpers --------
+                // -------- Prompt helpers --------
 
-        //        string resultRules = string.Join(", ",
-        //            resultStatusArray.Select(x => $"{x.Key}:{x.Value}")
-        //        );
+                string resultRules = string.Join(", ",
+                    resultStatusArray.Select(x => $"{x.Key}:{x.Value}")
+                );
 
-        //        string statusOptions = string.Join(", ",
-        //            resultStatusArray.Select(x => $"\"{x.Key}\"")
-        //        );
+                string statusOptions = string.Join(", ",
+                    resultStatusArray.Select(x => $"\"{x.Key}\"")
+                );
 
-        //        string keywordHints = string.Join("; ",
-        //            breakDownArray
-        //                .Where(x => x.Keywords != null && x.Keywords.Any())
-        //                .Select(x => $"{x.Key}:{string.Join(",", x.Keywords)}")
-        //        );
+                string keywordHints = string.Join("; ",
+                    breakDownArray
+                        .Where(x => x.Keywords != null && x.Keywords.Any())
+                        .Select(x => $"{x.Key}:{string.Join(",", x.Keywords)}")
+                );
 
-        //        // Build scores schema (NO values prefilled)
-        //        string scoresSchema = string.Join(",\n    ",
-        //            breakDownArray.Select(x =>
-        //                $"\"{x.Key}\": {{ \"total\": {x.Value}, \"obtained\": number, \"id\": {x.Id}, \"notes\": string }}"
-        //            )
-        //        );
+                // Build scores schema (NO values prefilled)
+                string scoresSchema = string.Join(",\n    ",
+                    breakDownArray.Select(x =>
+                        $"\"{x.Key}\": {{ \"total\": {x.Value}, \"obtained\": number, \"id\": {x.Id}, \"notes\": string }}"
+                    )
+                );
 
-        //        // -------- Core scoring instruction --------
+                // -------- Core scoring instruction --------
 
-        //        string scoringInstruction = $@"
-        //            For each category, calculate an obtained score between 0 and the category’s total
-        //            using ONLY explicit evidence found in the CandidateProfile JSON or Resume text.
+                string scoringInstruction = $@"
+For each category, calculate an obtained score between 0 and the category’s total
+using ONLY explicit evidence found in the CandidateProfile JSON or Resume text.
 
-        //            Rules:
-        //            - Do NOT infer or assume missing information.
-        //            - obtained must be a number ≤ total.
-        //            - If no explicit evidence exists, obtained = 0.
-        //            - match_score MUST equal the sum of all obtained values.
-        //            - percentage = (match_score / {totalScore}) × 100.
-        //            ";
+Rules:
+- Do NOT infer or assume missing information.
+- obtained must be a number ≤ total.
+- If no explicit evidence exists, obtained = 0.
+- match_score MUST equal the sum of all obtained values.
+- percentage = (match_score / {totalScore}) × 100.
+";
 
-        //        // -------- Final prompt --------
+                // -------- Final prompt --------
 
-        //        string prompt = $@"
-        //            You are an Applicant Tracking System (ATS) evaluator.
-        //            Use ONLY the explicit data supplied below. Do NOT infer or assume anything.
+                string prompt = $@"
+You are an Applicant Tracking System (ATS) evaluator.
+Use ONLY the explicit data supplied below. Do NOT infer or assume anything.
 
-        //            Total Score: {totalScore}
-        //            Result Rules: {resultRules}
-        //            Keywords (internal use only): {keywordHints}
+Total Score: {totalScore}
+Result Rules: {resultRules}
+Keywords (internal use only): {keywordHints}
 
-        //            CandidateProfile JSON:
-        //            {JsonConvert.SerializeObject(jObj["CandidateProfile"], Formatting.None)}
+CandidateProfile JSON:
+{JsonConvert.SerializeObject(jObj["CandidateProfile"], Formatting.None)}
 
-        //            JD:
-        //            {jobText}
+JD:
+{jobText}
 
-        //            Resume:
-        //            {resumeText}
+Resume:
+{resumeText}
 
-        //            {scoringInstruction}
+{scoringInstruction}
 
-        //            Return JSON ONLY in the exact structure below:
-        //            {{
-        //                ""match_score"": number,
-        //                ""percentage"": number,
-        //                ""remarks"": string,
-        //                ""Status"": one of [{statusOptions}],
-        //                ""scores"": {{
-        //                {scoresSchema}
-        //                }}
-        //            }}
+Return JSON ONLY in the exact structure below:
+{{
+  ""match_score"": number,
+  ""percentage"": number,
+  ""remarks"": string,
+  ""Status"": one of [{statusOptions}],
+  ""scores"": {{
+    {scoresSchema}
+  }}
+}}
 
-        //            temperature = 0.2
-        //            ".Trim();
+temperature = 0.2
+".Trim();
 
-        //        result.Prompt = prompt;
-        //        result.TotalScore = totalScore;
-        //        result.BreakDownArray = breakDownArray;
-        //        result.ResultStatusArray = resultStatusArray;
+                result.Prompt = prompt;
+                result.TotalScore = totalScore;
+                result.BreakDownArray = breakDownArray;
+                result.ResultStatusArray = resultStatusArray;
 
-        //        return result;
-        //    }
-        //    catch (Exception ex)
-        //    {
-        //        result.Prompt = JsonConvert.SerializeObject(new
-        //        {
-        //            error = "An error occurred while generating ATS prompt.",
-        //            details = ex.Message
-        //        });
+                return result;
+            }
+            catch (Exception ex)
+            {
+                result.Prompt = JsonConvert.SerializeObject(new
+                {
+                    error = "An error occurred while generating ATS prompt.",
+                    details = ex.Message
+                });
 
-        //        return result;
-        //    }
-        //}
+                return result;
+            }
+        }
 
         //private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId, string jobText, string resumeText)
         //{
@@ -1415,282 +1414,6 @@ namespace ATS.API.Controllers
 
         //    return resumeScore;
         //}
-
-        private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId,string jobText,string resumeText)
-        {
-            var result = new AtsPromptResult();
-
-            try
-            {
-                // =========================================================
-                // GET ATS CONFIGURATION FROM DB
-                // =========================================================
-
-                var parameters = new Dictionary<string, object>
-                {
-                    { "@CandidateId", candidateId }
-                };
-
-                DataTable dt = await _dataService.GetDataAsync(
-                    "SP_ATS_PROMT",
-                    parameters,
-                    _ConnectionString
-                );
-
-                if (dt == null || dt.Rows.Count == 0)
-                {
-                    result.Prompt = JsonConvert.SerializeObject(new
-                    {
-                        error = "No ATS configuration found."
-                    });
-
-                    return result;
-                }
-
-                if (dt.Rows[0]["AtsPrompt"] == DBNull.Value)
-                {
-                    result.Prompt = JsonConvert.SerializeObject(new
-                    {
-                        error = "ATS configuration is empty."
-                    });
-
-                    return result;
-                }
-
-                string atsConfigJson = dt.Rows[0]["AtsPrompt"]?.ToString();
-
-                if (string.IsNullOrWhiteSpace(atsConfigJson))
-                {
-                    result.Prompt = JsonConvert.SerializeObject(new
-                    {
-                        error = "ATS configuration JSON is invalid."
-                    });
-
-                    return result;
-                }
-
-                JObject atsConfig = JObject.Parse(atsConfigJson);
-
-                // =========================================================
-                // EXTRACT ATS CONFIG
-                // =========================================================
-
-                decimal totalScore =
-                    atsConfig["Total Score"]?.Value<decimal>() ?? 100;
-
-                var breakDownArray =
-                    JsonConvert.DeserializeObject<List<RatingItem>>(
-                        atsConfig["BreakDownScore"]?.ToString() ?? "[]"
-                    ) ?? new List<RatingItem>();
-
-                var resultStatusArray =
-                    JsonConvert.DeserializeObject<List<ResultStatusItem>>(
-                        atsConfig["Result Status"]?.ToString() ?? "[]"
-                    ) ?? new List<ResultStatusItem>();
-
-                // =========================================================
-                // PARSE RESUME JSON
-                // =========================================================
-
-                JObject resumeObj = new JObject();
-
-                try
-                {
-                    resumeObj = JObject.Parse(resumeText);
-                }
-                catch
-                {
-                    resumeObj = new JObject
-                    {
-                        ["ResumeText"] = resumeText
-                    };
-                }
-
-                // =========================================================
-                // EXTRACT CLEAN SECTIONS
-                // =========================================================
-
-                string cleanResumeText =
-                    resumeObj["ResumeText"]?.ToString() ?? "";
-
-                string candidateProfileJson =
-                    resumeObj["CandidateProfile"] != null
-                        ? JsonConvert.SerializeObject(
-                            resumeObj["CandidateProfile"],
-                            Formatting.Indented)
-                        : "{}";
-
-                // =========================================================
-                // BUILD STATUS RULES
-                // =========================================================
-
-                string statusRules = string.Join(
-                    Environment.NewLine,
-                    resultStatusArray.Select(x =>
-                        $"- {x.Key}: {x.Value}"
-                    )
-                );
-
-                string statusOptions = string.Join(
-                    ", ",
-                    resultStatusArray.Select(x => $"\"{x.Key}\"")
-                );
-
-                // =========================================================
-                // BUILD CATEGORY RULES
-                // =========================================================
-
-                string categoryRules = string.Join(
-                    Environment.NewLine,
-                    breakDownArray.Select(x =>
-                    {
-                        string keywords =
-                            x.Keywords != null && x.Keywords.Any()
-                                ? string.Join(", ", x.Keywords)
-                                : "General evaluation";
-
-                        return
-                            $"- {x.Key}: Evaluate only using explicit evidence related to [{keywords}]";
-                    })
-                );
-
-                // =========================================================
-                // BUILD RESPONSE SCHEMA
-                // =========================================================
-
-                string scoresSchema = string.Join(
-                    "," + Environment.NewLine,
-                    breakDownArray.Select(x =>
-                    $@" ""{x.Key}"": {{
-                        ""total"": {x.Value},
-                        ""obtained"": number,
-                        ""id"": {x.Id},
-                        ""notes"": ""string""
-                    }}"
-                    )
-                );
-
-                // =========================================================
-                // FINAL PROMPT
-                // =========================================================
-
-                string prompt = $@"
-                    You are an enterprise-grade Applicant Tracking System (ATS) evaluator.
-
-                    Use ONLY explicit evidence from:
-                    1. CandidateProfile JSON
-                    2. ResumeText
-
-                    If conflicting information exists:
-                    - CandidateProfile JSON has higher priority.
-                    - ResumeText is secondary supporting evidence.
-
-                    ====================================================
-                    SCORING CONFIGURATION
-                    ====================================================
-
-                    Total Score: {totalScore}
-
-                    Status Rules:
-                    {statusRules}
-
-                    ====================================================
-                    CATEGORY EVALUATION RULES
-                    ====================================================
-
-                    {categoryRules}
-
-                    ====================================================
-                    FLEXIBLE EVALUATION RULES
-                    ====================================================
-                    - Evaluate candidates using practical industry relevance, not only exact keyword matching.
-                    - Do NOT infer missing skills or experience.
-                    - Do NOT assume technologies from job titles.
-                    - Do NOT assume tools from responsibilities.
-                    - Do NOT assume experience from education. 
-                    - obtained score must never exceed category total.
-                    - All obtained values must be numeric.
-                    - Do NOT return null for numeric fields.
-                    - Do NOT return string values for numeric fields.
-                    - match_score MUST equal the sum of all obtained scores.
-                    - percentage = (match_score / {totalScore}) × 100.
-                    - remarks must summarize strengths, gaps, and missing requirements.
-                    - Do NOT create additional fields.
-                    - Do NOT rename fields.
-                    - Use exact response schema only.
-                    - Return valid parsable JSON only.
-                    - Do NOT return markdown.
-                    - Do NOT wrap JSON inside code blocks.
-                    - Do NOT add explanations before or after JSON.
-                    - JSON response must be RFC8259 compliant.
-
-                    ====================================================
-                    CANDIDATE PROFILE JSON
-                    ====================================================
-
-                    {candidateProfileJson}
-
-                    ====================================================
-                    JOB DESCRIPTION
-                    ====================================================
-
-                    {jobText}
-
-                    ====================================================
-                    RESUME TEXT
-                    ====================================================
-
-                    {cleanResumeText}
-
-                    ====================================================
-                    RESPONSE FORMAT
-                    ====================================================
-
-                    {{
-                        ""match_score"": number,
-                        ""percentage"": number,
-                        ""remarks"": ""string"",
-                        ""Status"": one of [{statusOptions}],
-                        ""scores"": {{
-                    {scoresSchema}
-                        }}
-                    }}
-                    ".Trim();
-
-                // =========================================================
-                // RETURN RESULT
-                // =========================================================
-
-                result.Prompt = prompt;
-                result.TotalScore = totalScore;
-                result.BreakDownArray = breakDownArray;
-                result.ResultStatusArray = resultStatusArray;
-
-                return result;
-            }
-            catch (JsonReaderException jsonEx)
-            {
-                result.Prompt = JsonConvert.SerializeObject(new
-                {
-                    error = "Invalid JSON format.",
-                    details = jsonEx.Message
-                });
-
-                return result;
-            }
-            catch (Exception ex)
-            {
-                result.Prompt = JsonConvert.SerializeObject(new
-                {
-                    error = "An error occurred while generating ATS prompt.",
-                    details = ex.Message
-                });
-
-                return result;
-            }
-        }
-
-
         private async Task<ResumeScore> SaveAtsResponseToDb(string rawJson,int candidateId,decimal totalScoreFromPrompt,List<RatingItem> breakDownArrayFromPrompt)
         {
             string cleanedJson = rawJson

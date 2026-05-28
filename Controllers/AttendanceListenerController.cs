@@ -60,7 +60,80 @@ namespace ATS.API.Controllers
                 return Content("ERROR");
             }
         }
-        
+        // ===============================================================
+        // 2. RECEIVE DEVICE PUNCH DATA
+        // ===============================================================
+        //[HttpPost]
+        //public async Task<IActionResult> ReceiveData(string SN, string table, int Stamp = 0)
+        //{
+        //    if (table != "ATTLOG")
+        //        return Content("OK");
+
+        //    try
+        //    {
+        //        string body;
+
+        //        // Validate device
+        //        var parameters = new Dictionary<string, object>
+        //        {
+        //            { "@DeviceSerialNumber", SN }
+        //        };
+
+        //        DataTable dtDevice = await _dataService.GetDataAsync("PRC_API_Check_Attendance_Device", parameters, _ConnectionString);
+
+        //        if (dtDevice == null || dtDevice.Rows.Count == 0)
+        //            return Content("ERROR: Device Not Authorized");
+
+        //        using var reader = new StreamReader(Request.Body, Encoding.UTF8);
+        //        body = await reader.ReadToEndAsync();
+        //        // 2. Parse and Insert Lines
+        //        var lines = body.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+
+        //        string line;
+
+        //        while ((line in lines)
+        //        {
+        //            var parts = line.Split('\t');
+
+        //            if (parts.Length < 2)
+        //                continue;
+
+        //            if (!DateTime.TryParse(parts[1], out DateTime punchTime))
+        //                continue;
+
+        //            string empId = parts[0];
+        //            string punchState = parts.Length > 2 ? parts[2] : "0"; 
+        //            // Queue background processing
+        //            await _taskQueue.QueueBackgroundWorkItem(async token =>
+        //            {
+        //                try
+        //                {
+        //                    using var scope = _scopeFactory.CreateScope();
+
+        //                    var repo = scope.ServiceProvider
+        //                        .GetRequiredService<IETimeTrackRepository>();
+
+        //                    int rawPunchId = await repo.InsertRawPunchAsync(SN, empId, punchTime, line, punchState,"DEVICE");
+
+        //                    if (rawPunchId > 0)
+        //                    {
+        //                        await repo.ProcessDailyAttendance(rawPunchId);
+        //                    }
+        //                }
+        //                catch (Exception ex)
+        //                {
+        //                    Console.WriteLine($"Punch processing error: {ex.Message}");
+        //                }
+        //            });
+        //        }
+
+        //        return Content("OK");
+        //    }
+        //    catch
+        //    {
+        //        return Content("ERROR");
+        //    }
+        //}
         [HttpPost]
         public async Task<IActionResult> ReceiveData(string SN, string table, int Stamp = 0)
         {
