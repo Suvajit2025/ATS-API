@@ -27,8 +27,7 @@ namespace ATS.API.Controllers
         private readonly string _ConnectionStringsaas;
         private readonly IHttpContextAccessor _httpContextAccessor;
         private readonly IATSHelper _helper;
-        private readonly MailService _mailService;
-
+        private readonly MailService _mailService; 
         public string _GptAPI;
         public string _ResumeSavePath;
         public string _ResumeSaveDB;
@@ -931,16 +930,27 @@ namespace ATS.API.Controllers
             string remarks = jObject["remarks"]?.ToString() ?? "";
             string status = jObject["Status"]?.ToString() ?? "";
 
-            if (status != null &&
-              !string.IsNullOrWhiteSpace(status) &&
-              status.Equals("Shortlisted", StringComparison.OrdinalIgnoreCase))
+            
+            await _backgroundTaskQueue.QueueBackgroundWorkItem(async token =>
             {
-                // Call LMS Exam Link API Method
-                await SendLmsExamLink(candidateId);
+                try
+                {
+                    if (status != null &&
+                   !string.IsNullOrWhiteSpace(status) &&
+                   status.Equals("Shortlisted", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // Call LMS Exam Link API Method
+                        await SendLmsExamLink(candidateId);
 
-                Console.WriteLine("LMS Exam Link sent successfully.");
-            }
-
+                        //Console.WriteLine("LMS Exam Link sent successfully.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Optional: log the error
+                    //Console.WriteLine($"Error in background task for candidateId {candidateId}: {ex.Message}");
+                }
+            });
             // ✅ NEW: scores object
             var scoresToken = jObject["scores"] as JObject;
             if (scoresToken == null)

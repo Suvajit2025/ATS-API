@@ -5,22 +5,12 @@ using ATS.API.Services;
 using ATS.API.Services.MailService;
 using CommonUtility.DataAccess;
 using CommonUtility.Interface;
-using CommonUtility.Repository;
-using DinkToPdf;
-using DinkToPdf.Contracts;
+using CommonUtility.Repository; 
 using Microsoft.AspNetCore.Identity;
-using Microsoft.EntityFrameworkCore;
-using System.Runtime.InteropServices;
-
-// Add this at the very top of Program.cs
-NativeLibrary.Load(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "libwkhtmltox.dll"));
-
-
+using Microsoft.EntityFrameworkCore; 
+ 
 var builder = WebApplication.CreateBuilder(args);
-// --- ADD THIS SECTION ---
-// This tells .NET to use the SynchronizedConverter whenever IConverter is requested
-builder.Services.AddSingleton(typeof(IConverter), new SynchronizedConverter(new PdfTools()));
-// ------------------------
+ // ------------------------
 // Controllers
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
