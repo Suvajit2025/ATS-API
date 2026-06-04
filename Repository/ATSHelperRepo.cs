@@ -7,6 +7,9 @@ using iTextSharp.text.pdf;
 using Path = System.IO.Path;
 using Newtonsoft.Json;
 using System.Net.Http.Headers;
+using IText7PdfDocument = iText.Kernel.Pdf.PdfDocument;
+using IText7PdfReader = iText.Kernel.Pdf.PdfReader;
+using IText7PdfTextExtractor = iText.Kernel.Pdf.Canvas.Parser.PdfTextExtractor;
 
 namespace ATS.API.Repository
 {
@@ -51,20 +54,7 @@ namespace ATS.API.Repository
             {
                 if (extension == ".pdf")
                 {
-                    using var reader = new PdfReader(filePath);
-                    StringBuilder text = new();
-                    for (int i = 1; i <= reader.NumberOfPages; i++)
-                    {
-                        try
-                        {
-                            text.Append(PdfTextExtractor.GetTextFromPage(reader, i));
-                        }
-                        catch (Exception ex)
-                        {
-                            text.AppendLine($"[Error reading page {i}: {ex.Message}]");
-                        }
-                    }
-                    return text.ToString();
+                    return ExtractPdfText(filePath);
                 }
                 else if (extension == ".docx")
                 {
@@ -89,6 +79,76 @@ namespace ATS.API.Repository
             catch (Exception ex)
             {
                 return $"[Error extracting text from {extension} file: {ex.Message}]";
+            }
+        }
+
+        private static string ExtractPdfText(string filePath)
+        {
+            string iTextSharpText = ExtractPdfTextWithITextSharp(filePath);
+
+            if (!string.IsNullOrWhiteSpace(iTextSharpText))
+            {
+                return iTextSharpText;
+            }
+
+            string iText7Text = ExtractPdfTextWithIText7(filePath);
+
+            if (!string.IsNullOrWhiteSpace(iText7Text))
+            {
+                return iText7Text;
+            }
+
+            return string.Empty;
+        }
+
+        private static string ExtractPdfTextWithITextSharp(string filePath)
+        {
+            try
+            {
+                using var reader = new PdfReader(filePath);
+                StringBuilder text = new();
+
+                for (int i = 1; i <= reader.NumberOfPages; i++)
+                {
+                    string pageText = PdfTextExtractor.GetTextFromPage(reader, i);
+
+                    if (!string.IsNullOrWhiteSpace(pageText))
+                    {
+                        text.AppendLine(pageText);
+                    }
+                }
+
+                return text.ToString();
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string ExtractPdfTextWithIText7(string filePath)
+        {
+            try
+            {
+                using var pdfReader = new IText7PdfReader(filePath);
+                using var pdfDocument = new IText7PdfDocument(pdfReader);
+                StringBuilder text = new();
+
+                for (int i = 1; i <= pdfDocument.GetNumberOfPages(); i++)
+                {
+                    string pageText = IText7PdfTextExtractor.GetTextFromPage(pdfDocument.GetPage(i));
+
+                    if (!string.IsNullOrWhiteSpace(pageText))
+                    {
+                        text.AppendLine(pageText);
+                    }
+                }
+
+                return text.ToString();
+            }
+            catch
+            {
+                return string.Empty;
             }
         }
 

@@ -39,9 +39,8 @@
 
   <ItemGroup>
     <Reference Include="CommonUtility">
-    <HintPath>CommonUtility.dll</HintPath>
-    <Private>true</Private>
-  </Reference>
+      <HintPath>CommonUtility.dll</HintPath>
+    </Reference>
   </ItemGroup>
 
    
