@@ -55,4 +55,9 @@ namespace ATS.API.Models
         public List<RatingItem> BreakDownArray { get; set; }
         public List<ResultStatusItem> ResultStatusArray { get; set; }
     }
+    public class ATSJobDescription
+    {
+        public int ExamTaggingID { get; set; }
+        public int ATS_HEAD_RATING_ID { get; set; }
+    }
 }
