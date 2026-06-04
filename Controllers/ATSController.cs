@@ -189,6 +189,123 @@ namespace ATS.API.Controllers
             }
         }
 
+
+        [HttpPost("bulk-resume-upload-score-ats-generate")]
+        public async Task<IActionResult> BulkResumeUploadScoreATSGenerate(
+                [FromForm] int postId,
+                [FromForm] List<IFormFile> resumes)
+        {
+            string profileJson = string.Empty;
+
+                            var parameters = new Dictionary<string, object>
+                    {
+                        { "@postId", postId }
+                    };
+
+            DataTable dt = await _dataService.GetDataAsync(
+                "SP_ATS_GetJobDescriptionByPostId",
+                parameters,
+                _ConnectionString);
+
+            if (dt.Rows.Count == 0)
+            {
+                return BadRequest("Job post not found.");
+            }
+
+            int examTaggingId = Convert.ToInt32(dt.Rows[0]["ExamTaggingID"]);
+            int atsHeadRatingId = Convert.ToInt32(dt.Rows[0]["ATS_HEAD_RATING_ID"]);
+
+            if (examTaggingId == 0)
+            {
+                return BadRequest(new
+                {
+                    Success = false,
+                    Message = "Exam is not tagged for this job post."
+                });
+            }
+
+            if (atsHeadRatingId == 0)
+            {
+                return BadRequest(new
+                {
+                    Success = false,
+                    Message = "ATS Rating configuration is not mapped for this job post."
+                });
+            }
+
+            profileJson = dt.Rows[0]["JobDescription"]?.ToString();
+
+            // Continue ATS processing...
+
+            return Ok(new
+            {
+                Success = true,
+                Message = "ATS processing started."
+            });
+        
+            //if (string.IsNullOrWhiteSpace(username))
+            //    return BadRequest(new { message = "Username is required." });
+
+            //try
+            //{
+            //    var parameters = new Dictionary<string, object> { { "@username", username } };
+            //    DataTable dt = await _dataService.GetDataAsync("SP_ATS_GET_RESUME_BYID", parameters, _ConnectionString);
+
+            //    if (dt.Rows.Count == 0)
+            //        return NotFound(new { message = "No resume found for the given username." });
+
+            //    DataRow row = dt.Rows[0];
+            //    byte[] fileData = (byte[])row["resumefile"];
+            //    string fileName = row["Name"].ToString();
+            //    string contentType = row["ContentType"].ToString();
+            //    int candidateId = (int)row["candidateid"];
+            //    string CandidateName = row["Candidate_Name"].ToString();
+
+            //    string fileExtension = contentType == "application/octet-stream"
+            //        ? _helper.GetFileExtensionFromName(fileName)
+            //        : _helper.GetExtensionFromContentType(contentType);
+
+            //    string relativePath = _ResumeSavePath;
+            //    string fileFolder = System.IO.Path.Combine(Directory.GetCurrentDirectory(), relativePath);
+
+            //    if (!Directory.Exists(fileFolder))
+            //        Directory.CreateDirectory(fileFolder);
+            //    //string tempFileName = $"Candidate_{candidateId}_{Guid.NewGuid()}{fileExtension}";
+            //    string savedFileName = $"CV_{CandidateName}_{candidateId}{fileExtension}";
+            //    string savedFilePath = System.IO.Path.Combine(fileFolder, savedFileName);
+            //    string fileUrl = savedFileName;
+
+            //    int SaveResume = await _dataService.AddAsync("SP_SAVE_RESUMEURL", new Dictionary<string, object>
+            //    {
+            //        { "@CandidateId", candidateId },
+            //        { "@FileUrl", fileUrl },
+            //    }, _ConnectionString);
+
+            //    await System.IO.File.WriteAllBytesAsync(savedFilePath, fileData);
+
+            //    await _backgroundTaskQueue.QueueBackgroundWorkItem(async token =>
+            //    {
+            //        try
+            //        {
+            //            await CandidateProfile(savedFilePath, candidateId);
+            //        }
+            //        catch (Exception ex)
+            //        {
+            //            // Optional: log the error
+            //            Console.WriteLine($"Error in background task for candidateId {candidateId}: {ex.Message}");
+            //        }
+            //    });
+
+
+            //    return Accepted(new { message = "Resume processing started." });
+            //}
+            //catch (Exception ex)
+            //{
+            //    return StatusCode(500, new { error = ex.Message });
+            //}
+        }
+
+
         private async Task CandidateProfile(string filePath, long candidateId)
         {
             try
