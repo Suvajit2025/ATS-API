@@ -5,10 +5,8 @@ using Microsoft.AspNetCore.Mvc;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Data;
-using System.Net;
 using System.Security.Cryptography;
 using System.Text;
-using System.Xml.Linq;
 
 namespace ATS.API.Controllers
 {
@@ -23,13 +21,9 @@ namespace ATS.API.Controllers
         private readonly string _resumeSavePath;
         private readonly string _candidateResumeResponseTemplate;
         private readonly string _openAiCandidateResumePrompt;
-        private readonly string _candidateSignupSoapUrl;
-        private readonly string _candidateSignupDefaultPassword;
+        private readonly string _candidateSignupUrl;
 
-        public BulkResumeController(
-            IDataService dataService,
-            IATSHelper atsHelper,
-            IConfiguration configuration)
+        public BulkResumeController(IDataService dataService,IATSHelper atsHelper,IConfiguration configuration)
         {
             _dataService = dataService;
             _helper = atsHelper;
@@ -38,8 +32,8 @@ namespace ATS.API.Controllers
             _resumeSavePath = configuration["ResumeSettings:SavePath"];
             _candidateResumeResponseTemplate = configuration["CandidateResumeResponseTemplate"];
             _openAiCandidateResumePrompt = configuration["OpenAIJobdescriptionConfig:CandidateResumePrompt"];
-            _candidateSignupSoapUrl = configuration["BulkResumeSignup:CreateNewUserSoapUrl"];
-            _candidateSignupDefaultPassword = configuration["BulkResumeSignup:DefaultPassword"];
+            _candidateSignupUrl = configuration["BulkResumeSignup:RegisterCandidateUrl"]
+                ?? configuration["BulkResumeSignup:CreateNewUserSoapUrl"];
         }
 
         [HttpPost("bulk-resume-upload-score-ats-generate")]
@@ -258,7 +252,7 @@ namespace ATS.API.Controllers
 
                     if (isShortlisted)
                     {
-                        signupResult = await CreateShortlistedCandidateBySoapAsync(candidateJson, jobDescription);
+                        signupResult = await RegisterShortlistedCandidateAsync(candidateJson, jobDescription);
                         scoreJson["ShortlistedSignupResult"] = signupResult;
                         candidateJson["ShortlistedSignupResult"] = signupResult;
                     }
@@ -564,7 +558,7 @@ namespace ATS.API.Controllers
             }
         }
 
-        private async Task<JObject> CreateShortlistedCandidateBySoapAsync(JObject candidateJson, ATSJobDescription jobDescription)
+        private async Task<JObject> RegisterShortlistedCandidateAsync(JObject candidateJson, ATSJobDescription jobDescription)
         {
             var result = new JObject
             {
@@ -573,124 +567,109 @@ namespace ATS.API.Controllers
                 ["CandidateId"] = null
             };
 
-            if (string.IsNullOrWhiteSpace(_candidateSignupSoapUrl))
+            if (string.IsNullOrWhiteSpace(_candidateSignupUrl))
             {
-                result["Message"] = "BulkResumeSignup:CreateNewUserSoapUrl is not configured.";
+                result["Message"] = "BulkResumeSignup:RegisterCandidateUrl is not configured.";
                 return result;
             }
 
             string email = GetJsonString(candidateJson, "Email");
             string mobile = GetJsonString(candidateJson, "Mobile");
             string username = !string.IsNullOrWhiteSpace(email) ? email : mobile;
-            string password = !string.IsNullOrWhiteSpace(_candidateSignupDefaultPassword)
-                ? _candidateSignupDefaultPassword
-                : mobile;
+            string password = GetSignupPassword(email);
 
             if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(email))
             {
-                result["Message"] = "Candidate email is required for CreateNewUser.";
+                result["Message"] = "Candidate email is required for RegisterCandidate.";
                 return result;
             }
 
             if (string.IsNullOrWhiteSpace(password))
             {
-                result["Message"] = "Candidate password could not be prepared. Configure BulkResumeSignup:DefaultPassword or ensure Mobile is extracted.";
+                result["Message"] = "Candidate password could not be prepared from email.";
                 return result;
             }
 
             try
             {
-                string endpoint = NormalizeAsmxEndpoint(_candidateSignupSoapUrl);
-                string soapEnvelope = BuildCreateNewUserSoapEnvelope(
-                    username,
-                    email,
-                    password,
-                    jobDescription.COMPANY_NAME ?? string.Empty,
-                    jobDescription.POST ?? string.Empty,
-                    jobDescription.CompanyID,
-                    jobDescription.PostID
-                );
+                var payload = new
+                {
+                    Username = username,
+                    Email = email,
+                    Password = password,
+                    Company = jobDescription.COMPANY_NAME ?? string.Empty,
+                    Post = jobDescription.POST ?? string.Empty,
+                    IDCompany = jobDescription.CompanyID,
+                    IDPost = jobDescription.PostID
+                };
 
                 using var client = new HttpClient();
-                using var request = new HttpRequestMessage(HttpMethod.Post, endpoint);
-                request.Headers.Add("SOAPAction", "\"http://tempuri.org/CreateNewUser\"");
-                request.Content = new StringContent(soapEnvelope, Encoding.UTF8, "text/xml");
+                using var request = new HttpRequestMessage(HttpMethod.Post, _candidateSignupUrl);
+                request.Content = new StringContent(JsonConvert.SerializeObject(payload), Encoding.UTF8, "application/json");
 
                 using HttpResponseMessage response = await client.SendAsync(request);
                 string responseText = await response.Content.ReadAsStringAsync();
 
                 result["HttpStatusCode"] = (int)response.StatusCode;
                 result["RawResponse"] = responseText;
+                result["Username"] = username;
+                result["Email"] = email;
+                result["Password"] = password;
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    result["Message"] = $"CreateNewUser SOAP call failed with HTTP {(int)response.StatusCode}.";
+                    result["Message"] = $"RegisterCandidate call failed with HTTP {(int)response.StatusCode}.";
                     return result;
                 }
 
-                string createUserResult = ExtractSoapResult(responseText, "CreateNewUserResult");
-                result["CreateNewUserResult"] = createUserResult;
+                JObject responseJson = CleanAndParseJson(responseText);
+                string registerResult = responseJson["d"]?.ToString() ?? string.Empty;
+                result["RegisterCandidateResult"] = registerResult;
 
-                if (long.TryParse(createUserResult, out long candidateId) && candidateId > 0)
+                long? candidateId = ExtractCandidateId(registerResult);
+
+                if (candidateId.HasValue && candidateId.Value > 0)
                 {
                     result["Success"] = true;
-                    result["CandidateId"] = candidateId;
+                    result["CandidateId"] = candidateId.Value;
                     result["Message"] = "Shortlisted candidate created successfully.";
                     return result;
                 }
 
-                result["Message"] = string.IsNullOrWhiteSpace(createUserResult)
-                    ? "CreateNewUser did not return a candidate id."
-                    : createUserResult;
+                result["Message"] = string.IsNullOrWhiteSpace(registerResult)
+                    ? "RegisterCandidate did not return a candidate id."
+                    : registerResult;
 
                 return result;
             }
             catch (Exception ex)
             {
-                result["Message"] = $"CreateNewUser SOAP call error: {ex.Message}";
+                result["Message"] = $"RegisterCandidate call error: {ex.Message}";
                 return result;
             }
         }
 
-        private string BuildCreateNewUserSoapEnvelope(string username, string email, string password, string company, string post, long companyId, long postId)
+        private string GetSignupPassword(string email)
         {
-            return $@"<?xml version=""1.0"" encoding=""utf-8""?>
-<soap:Envelope xmlns:xsi=""http://www.w3.org/2001/XMLSchema-instance"" xmlns:xsd=""http://www.w3.org/2001/XMLSchema"" xmlns:soap=""http://schemas.xmlsoap.org/soap/envelope/"">
-  <soap:Body>
-    <CreateNewUser xmlns=""http://tempuri.org/"">
-      <Username>{WebUtility.HtmlEncode(username)}</Username>
-      <Email>{WebUtility.HtmlEncode(email)}</Email>
-      <Password>{WebUtility.HtmlEncode(password)}</Password>
-      <Company>{WebUtility.HtmlEncode(company)}</Company>
-      <Post>{WebUtility.HtmlEncode(post)}</Post>
-      <IDCompany>{companyId}</IDCompany>
-      <IDPost>{postId}</IDPost>
-    </CreateNewUser>
-  </soap:Body>
-</soap:Envelope>";
-        }
-
-        private string ExtractSoapResult(string responseText, string resultElementName)
-        {
-            if (string.IsNullOrWhiteSpace(responseText))
+            if (string.IsNullOrWhiteSpace(email))
                 return string.Empty;
 
-            XDocument document = XDocument.Parse(responseText);
-            return document
-                .Descendants()
-                .FirstOrDefault(x => x.Name.LocalName == resultElementName)
-                ?.Value
-                ?.Trim() ?? string.Empty;
+            int atIndex = email.IndexOf('@');
+            return atIndex > 0 ? email.Substring(0, atIndex) : email;
         }
 
-        private string NormalizeAsmxEndpoint(string endpoint)
+        private long? ExtractCandidateId(string registerResult)
         {
-            int asmxIndex = endpoint.IndexOf(".asmx", StringComparison.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(registerResult))
+                return null;
 
-            if (asmxIndex >= 0)
-                return endpoint.Substring(0, asmxIndex + ".asmx".Length);
+            string candidateIdText = registerResult.Contains(':')
+                ? registerResult.Split(':').LastOrDefault()
+                : registerResult;
 
-            return endpoint;
+            return long.TryParse(candidateIdText?.Trim(), out long candidateId)
+                ? candidateId
+                : null;
         }
 
         private string GetJsonString(JObject json, string propertyName)
