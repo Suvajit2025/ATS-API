@@ -57,7 +57,26 @@ namespace ATS.API.Models
     }
     public class ATSJobDescription
     {
+        public string? JobTitle { get; set; }
+        public string? Objectives { get; set; }
+        public string? JobDescription { get; set; }
+        public string? Age { get; set; }
+        public string? Qualifications { get; set; }
+        public string? JobResponsibility { get; set; }
+        public string? RequiredSkill { get; set; }
+        public string? TechnicalScope { get; set; }
+        public string? Experience { get; set; }
+        public string? Location { get; set; }
+        public string? Others { get; set; }
+        public string? Compensate { get; set; }
+        public string? AdministrativeScope { get; set; }
+        public string? FilePath1 { get; set; }
+        public string? FilePath { get; set; }
         public int ExamTaggingID { get; set; }
         public int ATS_HEAD_RATING_ID { get; set; }
+        public int CompanyID { get; set; }
+        public string COMPANY_NAME { get; set; }
+        public int PostID { get; set; }
+        public string POST { get; set; }
     }
 }

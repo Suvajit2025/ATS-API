@@ -30,6 +30,10 @@
   "ProductionATSApi": "https://atsapi.mendine.co.in/ATS/ATSScore?username=",
   //"ProductionATSApi": "https://localhost:7181/ATS/ATSScore?username=",
   "DevelopmentATSApi": "https://atsapi.mendine.co.in/ATSRecruitment/GenerateATSScore?username=",
+  "BulkResumeSignup": {
+    "CreateNewUserSoapUrl": "https://recruitment.mendine.co.in/WebService.asmx",
+    "DefaultPassword": ""
+  },
   "MaxConcurrency": 20,
   "EtimePollSeconds": 120,
   "OpenAIJobdescriptionConfig": {

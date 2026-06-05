@@ -1,0 +1,197 @@
+IF OBJECT_ID('dbo.BulkResumeAtsScoreLog', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.BulkResumeAtsScoreLog
+    (
+        BulkResumeAtsScoreLogID BIGINT IDENTITY(1,1) NOT NULL
+            CONSTRAINT PK_BulkResumeAtsScoreLog PRIMARY KEY,
+        POST_ID INT NOT NULL,
+        CV_NAME NVARCHAR(500) NULL,
+        SAVED_CV_NAME NVARCHAR(500) NULL,
+        FILE_HASH VARCHAR(64) NULL,
+        CANDIDATE_NAME NVARCHAR(500) NULL,
+        MAIL_ID NVARCHAR(500) NULL,
+        PHONE_NUMBER NVARCHAR(50) NULL,
+        ATS_STATUS NVARCHAR(100) NULL,
+        IS_SHORTLISTED BIT NOT NULL
+            CONSTRAINT DF_BulkResumeAtsScoreLog_IS_SHORTLISTED DEFAULT (0),
+        IS_DUPLICATE BIT NOT NULL
+            CONSTRAINT DF_BulkResumeAtsScoreLog_IS_DUPLICATE DEFAULT (0),
+        DUPLICATE_OF_LOG_ID BIGINT NULL,
+        FULL_JSON NVARCHAR(MAX) NULL,
+        CANDIDATE_JSON NVARCHAR(MAX) NULL,
+        CREATED_DATE DATETIME NOT NULL
+            CONSTRAINT DF_BulkResumeAtsScoreLog_CREATED_DATE DEFAULT (GETDATE())
+    );
+END
+GO
+
+IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'FILE_HASH') IS NULL
+BEGIN
+    ALTER TABLE dbo.BulkResumeAtsScoreLog
+    ADD FILE_HASH VARCHAR(64) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'CANDIDATE_NAME') IS NULL
+BEGIN
+    ALTER TABLE dbo.BulkResumeAtsScoreLog
+    ADD CANDIDATE_NAME NVARCHAR(500) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'MAIL_ID') IS NULL
+BEGIN
+    ALTER TABLE dbo.BulkResumeAtsScoreLog
+    ADD MAIL_ID NVARCHAR(500) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'PHONE_NUMBER') IS NULL
+BEGIN
+    ALTER TABLE dbo.BulkResumeAtsScoreLog
+    ADD PHONE_NUMBER NVARCHAR(50) NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'IS_DUPLICATE') IS NULL
+BEGIN
+    ALTER TABLE dbo.BulkResumeAtsScoreLog
+    ADD IS_DUPLICATE BIT NOT NULL
+        CONSTRAINT DF_BulkResumeAtsScoreLog_IS_DUPLICATE DEFAULT (0);
+END
+GO
+
+IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'DUPLICATE_OF_LOG_ID') IS NULL
+BEGIN
+    ALTER TABLE dbo.BulkResumeAtsScoreLog
+    ADD DUPLICATE_OF_LOG_ID BIGINT NULL;
+END
+GO
+
+IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'CANDIDATE_JSON') IS NULL
+BEGIN
+    ALTER TABLE dbo.BulkResumeAtsScoreLog
+    ADD CANDIDATE_JSON NVARCHAR(MAX) NULL;
+END
+GO
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = 'IX_BulkResumeAtsScoreLog_Post_FileHash'
+      AND object_id = OBJECT_ID('dbo.BulkResumeAtsScoreLog')
+)
+BEGIN
+    CREATE INDEX IX_BulkResumeAtsScoreLog_Post_FileHash
+    ON dbo.BulkResumeAtsScoreLog (POST_ID, FILE_HASH)
+    WHERE FILE_HASH IS NOT NULL AND IS_DUPLICATE = 0;
+END
+GO
+
+CREATE OR ALTER PROCEDURE dbo.PRC_GET_BULK_RESUME_ATS_BY_HASH
+    @POST_ID INT,
+    @FILE_HASH VARCHAR(64)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP 1
+        BulkResumeAtsScoreLogID,
+        POST_ID,
+        CV_NAME,
+        SAVED_CV_NAME,
+        FILE_HASH,
+        CANDIDATE_NAME,
+        MAIL_ID,
+        PHONE_NUMBER,
+        ATS_STATUS,
+        IS_SHORTLISTED,
+        FULL_JSON,
+        CANDIDATE_JSON,
+        CREATED_DATE
+    FROM dbo.BulkResumeAtsScoreLog
+    WHERE POST_ID = @POST_ID
+      AND FILE_HASH = @FILE_HASH
+      AND IS_DUPLICATE = 0
+    ORDER BY BulkResumeAtsScoreLogID DESC;
+END
+GO
+
+CREATE OR ALTER PROCEDURE dbo.PRC_SAVE_BULK_RESUME_ATS_SCORE
+    @POST_ID INT,
+    @CV_NAME NVARCHAR(500) = NULL,
+    @SAVED_CV_NAME NVARCHAR(500) = NULL,
+    @FILE_HASH VARCHAR(64) = NULL,
+    @CANDIDATE_NAME NVARCHAR(500) = NULL,
+    @MAIL_ID NVARCHAR(500) = NULL,
+    @PHONE_NUMBER NVARCHAR(50) = NULL,
+    @ATS_STATUS NVARCHAR(100) = NULL,
+    @IS_SHORTLISTED BIT = 0,
+    @FULL_JSON NVARCHAR(MAX) = NULL,
+    @CANDIDATE_JSON NVARCHAR(MAX) = NULL,
+    @IS_DUPLICATE BIT = 0,
+    @DUPLICATE_OF_LOG_ID BIGINT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    INSERT INTO dbo.BulkResumeAtsScoreLog
+    (
+        POST_ID,
+        CV_NAME,
+        SAVED_CV_NAME,
+        FILE_HASH,
+        CANDIDATE_NAME,
+        MAIL_ID,
+        PHONE_NUMBER,
+        ATS_STATUS,
+        IS_SHORTLISTED,
+        IS_DUPLICATE,
+        DUPLICATE_OF_LOG_ID,
+        FULL_JSON,
+        CANDIDATE_JSON,
+        CREATED_DATE
+    )
+    VALUES
+    (
+        @POST_ID,
+        @CV_NAME,
+        @SAVED_CV_NAME,
+        @FILE_HASH,
+        @CANDIDATE_NAME,
+        @MAIL_ID,
+        @PHONE_NUMBER,
+        @ATS_STATUS,
+        @IS_SHORTLISTED,
+        @IS_DUPLICATE,
+        @DUPLICATE_OF_LOG_ID,
+        @FULL_JSON,
+        @CANDIDATE_JSON,
+        GETDATE()
+    );
+END
+GO
+
+CREATE OR ALTER PROCEDURE dbo.PRC_CHECK_BULK_RESUME_CANDIDATE_EXISTS
+    @username NVARCHAR(500) = NULL,
+    @mailid NVARCHAR(500) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT TOP 1
+        username,
+        mailid
+    FROM trecruitcandidatesignup
+    WHERE
+        (
+            NULLIF(LTRIM(RTRIM(@username)), '') IS NOT NULL
+            AND username = @username
+        )
+        OR
+        (
+            NULLIF(LTRIM(RTRIM(@mailid)), '') IS NOT NULL
+            AND mailid = @mailid
+        );
+END
+GO
