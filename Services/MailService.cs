@@ -1,7 +1,4 @@
-﻿using System.Net;
-using System.Net.Mail;
-using System.Text;
-using System.Text.RegularExpressions;
+﻿ 
 
 namespace ATS.API.Services
 {
@@ -21,13 +18,7 @@ namespace ATS.API.Services
                 _configuration = configuration;
             }
 
-            public async Task<bool> SendMailAsync(
-                string? toEmail,
-                string? fromEmail,
-                string? bodyHtml,
-                string? subject,
-                byte[]? attachmentBytes = null,
-                string? fileNameWithoutExt = null)
+            public async Task<bool> SendMailAsync(string? toEmail,string? fromEmail,string? bodyHtml,string? subject,byte[]? attachmentBytes = null,string? fileNameWithoutExt = null)
             {
                 try
                 {

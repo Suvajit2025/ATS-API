@@ -24,6 +24,7 @@ int maxConcurrency = builder.Configuration.GetValue<int>("MaxConcurrency");
 
 // ATS Services
 builder.Services.AddScoped<IATSHelper, ATSHelperRepo>();
+builder.Services.AddScoped<BulkResumeService>();
 
 builder.Services.AddScoped<ICandidateProcessor>(provider =>
 {
@@ -32,7 +33,7 @@ builder.Services.AddScoped<ICandidateProcessor>(provider =>
         maxConcurrency
     );
 });
-
+builder.Services.AddScoped<LmsExamLinkService>();
 // DATABASE CONNECTIONS
 var dbConnRecruit = builder.Configuration.GetConnectionString("DBConnRecruitment");
 var dbConnRecruitDemo = builder.Configuration.GetConnectionString("DBConnRecruitmentDemo");
@@ -102,7 +103,7 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("https://recruitment.mendine.co.in")
+        policy.WithOrigins("https://recruitment.mendine.co.in", "https://recruitmentsaas.mendine.co.in")
               .AllowAnyHeader()
               .AllowAnyMethod();
     });
