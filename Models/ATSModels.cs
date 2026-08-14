@@ -76,6 +76,9 @@ namespace ATS.API.Models
         public int ATS_HEAD_RATING_ID { get; set; }
         public int CompanyID { get; set; }
         public string COMPANY_NAME { get; set; }
+        public int DepartmentID { get; set; }
+        public int DEPARTMENT_ID { get; set; }
+        public string DEPARTMENT_NAME { get; set; }
         public int PostID { get; set; }
         public string POST { get; set; }
     }

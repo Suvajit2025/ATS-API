@@ -1,4 +1,4 @@
-﻿using ATS.API.Interface;
+using ATS.API.Interface;
 using ATS.API.Models;
 using ATS.API.Repository;
 using ATS.API.Services;
@@ -10,6 +10,13 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore; 
  
 var builder = WebApplication.CreateBuilder(args);
+
+// Explicitly load configuration from appsetting.json & appsettings.json
+builder.Configuration
+    .SetBasePath(Directory.GetCurrentDirectory())
+    .AddJsonFile("appsetting.json", optional: true, reloadOnChange: true)
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+    .AddEnvironmentVariables();
  // ------------------------
 // Controllers
 builder.Services.AddControllers();
@@ -21,6 +28,10 @@ builder.Services.AddHttpClient();
 
 // Read concurrency setting
 int maxConcurrency = builder.Configuration.GetValue<int>("MaxConcurrency");
+if (maxConcurrency <= 0)
+{
+    maxConcurrency = 3;
+}
 
 // ATS Services
 builder.Services.AddScoped<IATSHelper, ATSHelperRepo>();
@@ -72,7 +83,7 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
 .AddDefaultTokenProviders();
 
 // Repository
-//builder.Services.AddScoped<IETimeTrackRepository, ETimeTrackRepository>();
+builder.Services.AddScoped<IETimeTrackRepository, ETimeTrackRepository>();
 builder.Services.AddScoped<MailService>();
 
 // Hosted Services
@@ -103,19 +114,55 @@ builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.WithOrigins("https://recruitment.mendine.co.in", "https://recruitmentsaas.mendine.co.in")
+        policy.SetIsOriginAllowed(origin =>
+              {
+                  if (string.IsNullOrWhiteSpace(origin))
+                      return false;
+
+                  var host = new Uri(origin).Host;
+                  return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+                      || host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase)
+                      || host.Equals("recruitment.mendine.co.in", StringComparison.OrdinalIgnoreCase)
+                      || host.Equals("recruitmentsaas.mendine.co.in", StringComparison.OrdinalIgnoreCase);
+              })
               .AllowAnyHeader()
               .AllowAnyMethod();
     });
 });
 
 var app = builder.Build();
-// Swagger
-if (app.Environment.IsDevelopment())
+
+// Support IIS Virtual Application PathBase /ATS
+app.Use(async (context, next) =>
 {
-    app.UseSwagger();
-    app.UseSwaggerUI();
-}
+    if (context.Request.Path.StartsWithSegments("/ATS", StringComparison.OrdinalIgnoreCase, out var remainingPath))
+    {
+        context.Request.PathBase = "/ATS";
+        context.Request.Path = remainingPath;
+    }
+    await next();
+});
+
+// Enable Swagger in all environments (Development & Published Production under IIS /ATS)
+app.UseSwagger(c =>
+{
+    c.RouteTemplate = "swagger/{documentName}/swagger.json";
+});
+
+app.UseSwaggerUI(c =>
+{
+    c.SwaggerEndpoint("v1/swagger.json", "ATS API v1");
+    c.SwaggerEndpoint("/ATS/swagger/v1/swagger.json", "ATS API v1 (/ATS)");
+    c.SwaggerEndpoint("/swagger/v1/swagger.json", "ATS API v1 (Root)");
+    c.RoutePrefix = "swagger";
+});
+
+app.UseSwaggerUI(c =>
+{
+    c.SwaggerEndpoint("swagger/v1/swagger.json", "ATS API v1");
+    c.SwaggerEndpoint("/ATS/swagger/v1/swagger.json", "ATS API v1 (/ATS)");
+    c.RoutePrefix = string.Empty; // Serves Swagger UI directly at https://atsapi.mendine.co.in/ATS
+});
 
 // Middleware
 app.UseCors("AllowFrontend");

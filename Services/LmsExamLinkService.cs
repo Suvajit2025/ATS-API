@@ -1,3 +1,4 @@
+using System.Text;
 using MailSender = ATS.API.Services.MailService.MailService;
 
 namespace ATS.API.Services
@@ -9,7 +10,21 @@ namespace ATS.API.Services
         public string CandidateName { get; set; } = string.Empty;
         public string CompanyName { get; set; } = string.Empty;
         public string AppliedPost { get; set; } = string.Empty;
+        public string PostName { get => AppliedPost; set => AppliedPost = value; }
+        public string DepartmentName { get; set; } = string.Empty;
         public int ExamTaggingId { get; set; }
+
+        public int CompanyId { get; set; }
+        public int Companyid { get => CompanyId; set => CompanyId = value; }
+        public int CompanyID { get => CompanyId; set => CompanyId = value; }
+
+        public int DepartmentId { get; set; }
+        public int Departmentid { get => DepartmentId; set => DepartmentId = value; }
+        public int DepartmentID { get => DepartmentId; set => DepartmentId = value; }
+
+        public int PostId { get; set; }
+        public int PostID { get => PostId; set => PostId = value; }
+        public int Postid { get => PostId; set => PostId = value; }
     }
 
     public class LmsExamLinkMailResult
@@ -71,19 +86,58 @@ namespace ATS.API.Services
             };
         }
 
-        private string BuildExamLink(LmsExamLinkMailRequest request)
+        public string BuildExamLink(LmsExamLinkMailRequest request)
         {
             string mailId = request.CandidateMailId ?? string.Empty;
 
-            return "https://lms.iecsl.in/t/mendinepharmaceuticalspvtltd/Login?UserName="
-                + Uri.EscapeDataString(mailId)
-                + "&UserID=" + request.CandidateId
-                + "&UserEmail=" + Uri.EscapeDataString(mailId)
+            return BuildExamLink(
+                request.ExamTaggingId,
+                request.CompanyId,
+                request.DepartmentId,
+                request.PostId,
+                request.CandidateId,
+                mailId,
+                request.CompanyName,
+                request.AppliedPost,
+                request.DepartmentName);
+        }
+
+        public string BuildExamLink(
+            int examTaggingId, 
+            int companyId, 
+            int departmentId, 
+            int postId, 
+            long candidateId = 0, 
+            string candidateMailId = "",
+            string companyName = "",
+            string postName = "",
+            string departmentName = "")
+        {
+            string mailId = candidateMailId ?? string.Empty;
+
+            if (candidateId == 0)
+            {
+                mailId = "pallab.das@iecsl.co.in";
+            }
+
+            string rawQuery = "UserName=" + mailId
+                + "&UserID=" + candidateId
+                + "&UserEmail=" + mailId
                 + "&PortalID=2"
                 + "&TenantID=B16FABB4-953D-4BFF-9841-C9ECD0A04826"
                 + "&tenantUrl=mendinepharmaceuticalspvtltd"
                 + "&vSource=ExternalExam"
-                + "&IDExam=" + request.ExamTaggingId;
+                + "&IDExam=" + examTaggingId
+                + "&CompanyId=" + companyId
+                + "&Departmentid=" + departmentId
+                + "&PostId=" + postId
+                + "&CompanyName=" + (companyName ?? string.Empty)
+                + "&PostName=" + (postName ?? string.Empty)
+                + "&DepartmentName=" + (departmentName ?? string.Empty);
+
+            string base64Query = Convert.ToBase64String(Encoding.UTF8.GetBytes(rawQuery));
+
+            return "https://lms.iecsl.in/t/mendinepharmaceuticalspvtltd/Login?Q=" + Uri.EscapeDataString(base64Query);
         }
 
         private string BuildMailBody(LmsExamLinkMailRequest request, string examLink)

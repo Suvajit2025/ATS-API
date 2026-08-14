@@ -1432,7 +1432,7 @@ temperature = 0.2
             if (scoresToken == null)
                 throw new Exception("Invalid ATS response: scores missing.");
 
-            decimal obtainedScore = matchScore; // TRUST GPT TOTAL (single source of truth)
+            decimal obtainedScore = 0;
 
             // -------- Build Breakdown JSON (Total + Obtained) --------
             var enrichedBreakdown = new Dictionary<string, object>();
@@ -1445,6 +1445,9 @@ temperature = 0.2
                 decimal.TryParse(item.Value, out total);
 
                 decimal obtained = scoresToken[key]?["obtained"]?.Value<decimal>() ?? 0;
+                // Keep persisted ATS marks inside the configured category boundary.
+                obtained = ClampObtainedScore(obtained, total);
+                obtainedScore += obtained;
                 string notes = scoresToken[key]?["notes"]?.ToString() ?? "";
                 int id = scoresToken[key]?["id"]?.Value<int>() ?? item.Id;
 
@@ -1460,6 +1463,11 @@ temperature = 0.2
                     notes
                 };
             }
+
+            if (totalScoreFromPrompt > 0 && obtainedScore > totalScoreFromPrompt)
+                obtainedScore = totalScoreFromPrompt;
+
+            matchScore = Convert.ToInt32(Math.Round(obtainedScore, 0, MidpointRounding.AwayFromZero));
 
             string breakdownJson = JsonConvert.SerializeObject(enrichedBreakdown, Formatting.None);
             string detailsJson = JsonConvert.SerializeObject(detailsDict, Formatting.None);
@@ -1516,6 +1524,17 @@ temperature = 0.2
             );
 
             return resumeScore;
+        }
+
+        private static decimal ClampObtainedScore(decimal obtained, decimal total)
+        {
+            if (obtained < 0)
+                return 0;
+
+            if (total > 0 && obtained > total)
+                return total;
+
+            return obtained;
         }
 
 

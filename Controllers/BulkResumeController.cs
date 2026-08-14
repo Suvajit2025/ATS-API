@@ -7,6 +7,10 @@ using Newtonsoft.Json.Linq;
 
 namespace ATS.API.Controllers
 {
+    /// <summary>
+    /// API Controller handling bulk resume processing, automated ATS (Applicant Tracking System) scoring,
+    /// manual recruitment actions (EAF / Candidate registration, Exam link dispatch), and LMS exam callback integrations.
+    /// </summary>
     [Route("ATS")]
     [ApiController]
     public class BulkResumeController : ControllerBase
@@ -14,20 +18,49 @@ namespace ATS.API.Controllers
         private readonly BulkResumeService _bulkResumeService;
         private readonly IBackgroundTaskQueue _backgroundTaskQueue;
         private readonly IServiceScopeFactory _serviceScopeFactory;
+        private readonly LmsExamLinkService _lmsExamLinkService;
 
-        public BulkResumeController(BulkResumeService bulkResumeService, IBackgroundTaskQueue backgroundTaskQueue, IServiceScopeFactory serviceScopeFactory)
+        /// <summary>
+        /// Initializes a new instance of the <see cref="BulkResumeController"/> class.
+        /// </summary>
+        /// <param name="bulkResumeService">Domain service providing file parsing, duplicate checks, AI prompting, and database persistence.</param>
+        /// <param name="backgroundTaskQueue">Queue for dispatching asynchronous background workloads (e.g. bulk parsing and scoring).</param>
+        /// <param name="serviceScopeFactory">Factory used to create independent DI scopes during background job execution.</param>
+        /// <param name="lmsExamLinkService">Service for generating and dispatching LMS assessment exam links.</param>
+        public BulkResumeController(
+            BulkResumeService bulkResumeService, 
+            IBackgroundTaskQueue backgroundTaskQueue, 
+            IServiceScopeFactory serviceScopeFactory,
+            LmsExamLinkService lmsExamLinkService)
         {
             _bulkResumeService = bulkResumeService;
             _backgroundTaskQueue = backgroundTaskQueue;
             _serviceScopeFactory = serviceScopeFactory;
+            _lmsExamLinkService = lmsExamLinkService;
         }
 
+        /// <summary>
+        /// Uploads up to 50 resumes for a designated job post and enqueues them for background ATS scoring.
+        /// </summary>
+        /// <remarks>
+        /// Workflow:
+        /// 1. Validates input resume count (1 to 50 files).
+        /// 2. Verifies existence of the Job Description and ATS rating configuration for the given Post ID.
+        /// 3. Performs multi-level deduplication per file:
+        ///    - Within current batch (MD5/SHA hash).
+        ///    - Currently active background processing.
+        ///    - Existing resume records in database for this post.
+        /// 4. Saves valid files to temporary storage and dispatches batch to the background task queue.
+        /// </remarks>
+        /// <param name="postId">The unique identifier of the Job Post.</param>
+        /// <param name="resumes">List of resume files (PDF, DOCX, DOC) uploaded via multipart form data.</param>
+        /// <returns>HTTP 202 Accepted with batch details on success, or HTTP 400 Bad Request on validation failure.</returns>
         [HttpPost("bulk-resume-upload")]
         public async Task<IActionResult> BulkResumeUploadScoreATSGenerate([FromForm] int postId, [FromForm] List<IFormFile> resumes)
         {
             try
             {
-                // Step 1: Validate uploaded files.
+                // Validate that at least one resume file was provided
                 if (resumes == null || resumes.Count == 0)
                 {
                     return BadRequest(new
@@ -37,7 +70,19 @@ namespace ATS.API.Controllers
                     });
                 }
 
-                // Step 2: Get job details from DB by post id.
+                // Enforce maximum batch size limit
+                if (resumes.Count > 50)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        MaxAllowed = 50,
+                        UploadedCount = resumes.Count,
+                        Message = "Maximum 50 resumes are allowed in one bulk upload."
+                    });
+                }
+
+                // Retrieve job description details associated with the Post ID
                 List<ATSJobDescription> jobs = await _bulkResumeService.GetJobDescriptionsByPostIdAsync(postId);
 
                 if (jobs.Count == 0)
@@ -49,22 +94,22 @@ namespace ATS.API.Controllers
                     });
                 }
 
-                // Step 3: Use first job detail for scoring.
                 ATSJobDescription jobDescription = jobs.First();
-                int examTaggingId = jobDescription.ExamTaggingID;
                 int atsHeadRatingId = jobDescription.ATS_HEAD_RATING_ID;
 
-                // Step 4: Check exam mapping.
-                if (examTaggingId == 0)
+                // Validate that the job description contains sufficient content for AI evaluation
+                if (!HasProperJobDescription(jobDescription))
                 {
                     return BadRequest(new
                     {
                         Success = false,
-                        Message = "Exam is not tagged for this job post."
+                        PostId = postId,
+                        Post = jobDescription.POST,
+                        Message = "Proper job description is not available for this post. ATS score cannot be generated."
                     });
                 }
-
-                // Step 5: Check ATS rating mapping.
+                 
+                // Validate that ATS Head Rating criteria is mapped
                 if (atsHeadRatingId == 0)
                 {
                     return BadRequest(new
@@ -74,426 +119,671 @@ namespace ATS.API.Controllers
                     });
                 }
 
-                // Step 6: Prepare folder and response list.
                 string uploadFolder = _bulkResumeService.GetUploadFolder();
-                var results = new List<object>();
-                int totalUploaded = resumes.Count;
-                int successfullyProcessed = 0;
-                int failedProcessing = 0;
-                var notProcessedResumes = new List<object>();
-                var processedButExist = new List<object>();
-                var processedButAtsRejected = new List<object>();
-                var processedAndShortlisted = new List<object>();
+                var queuedFiles = new List<BulkResumeQueuedFile>();
+                var rejectedFiles = new List<object>();
+                var batchHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-                // Step 7: Process resumes one by one.
-                foreach (IFormFile resume in resumes)
+                // Iterate through files, validate, check duplicates, and stage for background execution
+                foreach (IFormFile resume in resumes.Where(x => x != null))
                 {
-                    string savedFileName = string.Empty;
-                    string savedFilePath = string.Empty;
-                    string fileHash = string.Empty;
-                    string candidateName = string.Empty;
-                    string mailId = string.Empty;
-                    string phoneNumber = string.Empty;
-                    JObject candidateJson = null;
+                    if (resume.Length == 0)
+                    {
+                        rejectedFiles.Add(new
+                        {
+                            FileName = resume.FileName,
+                            Reason = "Empty resume file skipped."
+                        });
+                        continue;
+                    }
+
+                    string fileHash = await _bulkResumeService.ComputeFileHashAsync(resume);
+
+                    // 1. Check duplicate within current upload batch
+                    if (!string.IsNullOrWhiteSpace(fileHash) && batchHashes.Contains(fileHash))
+                    {
+                        rejectedFiles.Add(new
+                        {
+                            FileName = resume.FileName,
+                            Reason = "Duplicate CV upload skipped. Identical file found in the same bulk upload request."
+                        });
+                        continue;
+                    }
+
+                    // 2. Check if identical resume content is currently processing in background
+                    if (!string.IsNullOrWhiteSpace(fileHash) && _bulkResumeService.IsResumeCurrentlyProcessing(postId, fileHash))
+                    {
+                        rejectedFiles.Add(new
+                        {
+                            FileName = resume.FileName,
+                            Reason = "Duplicate CV upload skipped. A resume with identical content is currently being processed for this job post."
+                        });
+                        continue;
+                    }
+
+                    // 3. Check duplicate in database for this post
+                    if (!string.IsNullOrWhiteSpace(fileHash))
+                    {
+                        JObject existingResume = await _bulkResumeService.GetExistingBulkResumeByHashAsync(postId, fileHash);
+                        if (existingResume != null)
+                        {
+                            rejectedFiles.Add(new
+                            {
+                                FileName = resume.FileName,
+                                Reason = "Duplicate CV upload skipped. A resume with identical content already exists for this job post.",
+                                ExistingCvName = existingResume["CV_NAME"]?.ToString(),
+                                ExistingSavedCvName = existingResume["SAVED_CV_NAME"]?.ToString()
+                            });
+                            continue;
+                        }
+
+                        batchHashes.Add(fileHash);
+                        _bulkResumeService.TryRegisterActiveProcessingHash(postId, fileHash);
+                    }
+
+                    // Persist file to local disk for background worker consumption
+                    (string savedFileName, string savedFilePath) = await _bulkResumeService.SaveResumeTempFileAsync(resume, uploadFolder);
+
+                    queuedFiles.Add(new BulkResumeQueuedFile
+                    {
+                        OriginalFileName = resume.FileName,
+                        SavedFileName = savedFileName,
+                        SavedFilePath = savedFilePath,
+                        FileHash = fileHash
+                    });
+                }
+
+                // If all files in the batch were rejected / invalid
+                if (queuedFiles.Count == 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        TotalUploaded = resumes.Count,
+                        RejectedBeforeQueue = rejectedFiles,
+                        Message = "No valid resume files found for background processing."
+                    });
+                }
+
+                string batchId = Guid.NewGuid().ToString("N");
+
+                // Enqueue background processing task with dedicated DI scope
+                await _backgroundTaskQueue.QueueBackgroundWorkItem(async token =>
+                {
+                    using var scope = _serviceScopeFactory.CreateScope();
+                    var bulkResumeService = scope.ServiceProvider.GetRequiredService<BulkResumeService>();
+                    await ProcessBulkResumeBatchAsync(batchId, bulkResumeService, postId, jobDescription, queuedFiles, token);
+                });
+
+                return Accepted(new
+                {
+                    Success = true,
+                    BatchId = batchId,
+                    PostId = postId,
+                    ATSHeadRatingID = atsHeadRatingId,
+                    TotalUploaded = resumes.Count,
+                    AcceptedForBackgroundProcessing = queuedFiles.Count,
+                    RejectedBeforeQueue = rejectedFiles,
+                    message = "Bulk resume files accepted. ATS processing is running in background. Exam tagging is not required during bulk CV upload."
+                });
+            }
+            catch (Exception ex)
+            {
+                string detailedMessage = ex.InnerException != null
+                    ? $"{ex.Message} Inner: {ex.InnerException.Message}"
+                    : ex.Message;
+
+                return StatusCode(500, new
+                {
+                    Success = false,
+                    Message = detailedMessage
+                });
+            }
+        }
+
+        /// <summary>
+        /// Asynchronously processes a batch of staged resume files in the background.
+        /// Executes security scans, file hash verification, text extraction, candidate profile extraction,
+        /// AI ATS rating evaluation via LLM, and persists results into the ATS database log.
+        /// </summary>
+        /// <param name="batchId">Unique tracking identifier for this upload batch.</param>
+        /// <param name="bulkResumeService">Scoped instance of BulkResumeService.</param>
+        /// <param name="postId">Target Job Post ID.</param>
+        /// <param name="jobDescription">Associated job description model.</param>
+        /// <param name="queuedFiles">List of queued resume files to process.</param>
+        /// <param name="token">Cancellation token for background task termination.</param>
+        private async Task ProcessBulkResumeBatchAsync(string batchId, BulkResumeService bulkResumeService, int postId, ATSJobDescription jobDescription, List<BulkResumeQueuedFile> queuedFiles, CancellationToken token)
+        {
+            int atsHeadRatingId = jobDescription.ATS_HEAD_RATING_ID;
+            int companyId = jobDescription.CompanyID;
+            int departmentId = jobDescription.DepartmentID > 0 ? jobDescription.DepartmentID : jobDescription.DEPARTMENT_ID;
+
+            var parallelOptions = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = Math.Min(5, Environment.ProcessorCount * 2),
+                CancellationToken = token
+            };
+
+            await Parallel.ForEachAsync(queuedFiles, parallelOptions, async (queuedFile, ct) =>
+            {
+                if (ct.IsCancellationRequested)
+                    return;
+
+                string fileHash = !string.IsNullOrWhiteSpace(queuedFile.FileHash)
+                    ? queuedFile.FileHash
+                    : await bulkResumeService.ComputeFileHashAsync(queuedFile.SavedFilePath);
+
+                string candidateName = string.Empty;
+                string mailId = string.Empty;
+                string phoneNumber = string.Empty;
+                JObject candidateJson = null;
+
+                try
+                {
+                    // 1. Security scan: verify file header, signature, and malicious content
+                    ResumeSecurityScanResult scanResult = await bulkResumeService.ScanResumeFileAsync(queuedFile.SavedFilePath, queuedFile.OriginalFileName);
+
+                    if (!scanResult.IsSafe)
+                    {
+                        var scanFailedJson = new JObject
+                        {
+                            ["batchId"] = batchId,
+                            ["message"] = "Resume file failed security scan.",
+                            ["reason"] = scanResult.Message
+                        };
+
+                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, null, null, null, atsHeadRatingId, null, "SecurityScanFailed", false, scanFailedJson, null, false, null);
+                        return;
+                    }
+
+                    // 2. Re-verify database deduplication in case a parallel worker finished earlier
+                    JObject existingResume = await bulkResumeService.GetExistingBulkResumeByHashAsync(postId, fileHash);
+
+                    if (existingResume != null)
+                    {
+                        long? duplicateOfLogId = existingResume["BulkResumeAtsScoreLogID"]?.Value<long?>();
+
+                        var duplicateJson = new JObject
+                        {
+                            ["batchId"] = batchId,
+                            ["message"] = "Duplicate CV upload skipped. Existing ATS score log found for the same post and file hash.",
+                            ["duplicateOfLogId"] = duplicateOfLogId,
+                            ["existingCvName"] = existingResume["CV_NAME"],
+                            ["existingSavedCvName"] = existingResume["SAVED_CV_NAME"],
+                            ["existingStatus"] = existingResume["ATS_STATUS"],
+                            ["fileHash"] = fileHash
+                        };
+
+                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, null, null, null, atsHeadRatingId, null, "Duplicate", false, duplicateJson, null, true, duplicateOfLogId);
+                        return;
+                    }
+
+                    // 3. Extract text content from the uploaded resume file
+                    string resumeText = await bulkResumeService.ExtractResumeTextAsync(queuedFile.SavedFilePath);
+
+                    if (string.IsNullOrWhiteSpace(resumeText) || resumeText.StartsWith("[Unsupported", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var extractionFailedJson = new JObject
+                        {
+                            ["batchId"] = batchId,
+                            ["message"] = "Resume text could not be extracted.",
+                            ["reason"] = resumeText,
+                            ["fileHash"] = fileHash
+                        };
+
+                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, null, null, null, atsHeadRatingId, null, "ExtractionFailed", false, extractionFailedJson, null, false, null);
+                        return;
+                    }
+
+                    // 4. Parse structured candidate contact details and experience from resume text
+                    candidateJson = await bulkResumeService.ParseCandidateResumeJsonAsync(resumeText);
+                    candidateName = bulkResumeService.GetCandidateName(candidateJson);
+                    mailId = bulkResumeService.GetJsonString(candidateJson, "Email");
+                    phoneNumber = bulkResumeService.GetJsonString(candidateJson, "Mobile");
+
+                    // 5. Check if the candidate email is already registered for this job post
+                    JObject existingCandidate = await bulkResumeService.GetExistingCandidateByUsernameOrMailAsync(mailId, mailId, postId);
+
+                    if (existingCandidate != null)
+                    {
+                        long? duplicateOfLogId = existingCandidate["BulkResumeAtsScoreLogID"]?.Value<long?>();
+
+                        var candidateAlreadyExistsJson = new JObject
+                        {
+                            ["batchId"] = batchId,
+                            ["message"] = "Candidate already exists. ATS score generation skipped.",
+                            ["existingCandidate"] = existingCandidate,
+                            ["fileHash"] = fileHash
+                        };
+
+                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, candidateName, mailId, phoneNumber, atsHeadRatingId, null, "CandidateAlreadyExists", false, candidateAlreadyExistsJson, candidateJson, true, duplicateOfLogId);
+                        return;
+                    }
+
+                    // 6. Build prompt based on head rating criteria, send to LLM/GPT for ATS scoring
+                    AtsPromptResult promptResult = await bulkResumeService.GenerateBulkPromptFromAtsHeadRatingAsync(atsHeadRatingId, jobDescription, resumeText, candidateJson);
+                    string scoreResponse = await bulkResumeService.SendGptMessageAsync(promptResult.Prompt);
+                    JObject scoreJson;
 
                     try
                     {
-                        // Step 7.1: Skip empty file.
-                        if (resume == null || resume.Length == 0)
-                        {
-                            results.Add(new
-                            {
-                                FileName = resume?.FileName,
-                                Success = false,
-                                Message = "Empty resume file skipped."
-                            });
-
-                            notProcessedResumes.Add(new
-                            {
-                                FileName = resume?.FileName,
-                                CandidateName = candidateName,
-                                MailId = mailId,
-                                PhoneNumber = phoneNumber,
-                                Reason = "Empty resume file skipped."
-                            });
-
-                            failedProcessing++;
-                            continue;
-                        }
-
-                        // Step 7.2: Save CV temporarily.
-                        (savedFileName, savedFilePath) = await _bulkResumeService.SaveResumeTempFileAsync(resume, uploadFolder);
-
-                        // Step 7.3: Create file hash.
-                        fileHash = await _bulkResumeService.ComputeFileHashAsync(savedFilePath);
-
-                        // Step 7.4: Check duplicate CV by file hash.
-                        JObject existingResume = await _bulkResumeService.GetExistingBulkResumeByHashAsync(postId, fileHash);
-
-                        if (existingResume != null)
-                        {
-                            long? duplicateOfLogId = existingResume["BulkResumeAtsScoreLogID"]?.Value<long?>();
-
-                            var duplicateJson = new JObject
-                            {
-                                ["message"] = "Duplicate CV upload skipped. Existing ATS score log found for the same post and file hash.",
-                                ["duplicateOfLogId"] = duplicateOfLogId,
-                                ["existingCvName"] = existingResume["CV_NAME"],
-                                ["existingSavedCvName"] = existingResume["SAVED_CV_NAME"],
-                                ["existingStatus"] = existingResume["ATS_STATUS"],
-                                ["fileHash"] = fileHash
-                            };
-
-                            await _bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, resume.FileName, savedFileName, fileHash, null, null, null, null, "Duplicate", false, duplicateJson, null, true, duplicateOfLogId);
-
-                            processedButExist.Add(new
-                            {
-                                FileName = resume.FileName,
-                                CandidateName = existingResume["CANDIDATE_NAME"]?.ToString(),
-                                MailId = existingResume["MAIL_ID"]?.ToString(),
-                                PhoneNumber = existingResume["PHONE_NUMBER"]?.ToString(),
-                                Status = "Duplicate",
-                                Message = "Duplicate CV upload skipped."
-                            });
-
-                            results.Add(new
-                            {
-                                FileName = resume.FileName,
-                                Success = true,
-                                SavedFile = savedFileName,
-                                Status = "Duplicate",
-                                IsDuplicate = true,
-                                FileHash = fileHash,
-                                DuplicateOfLogId = duplicateOfLogId,
-                                Message = "Duplicate CV upload skipped."
-                            });
-
-                            successfullyProcessed++;
-                            continue;
-                        }
-
-                        // Step 7.5: Extract text from CV.
-                        string resumeText = await _bulkResumeService.ExtractResumeTextAsync(savedFilePath);
-
-                        if (string.IsNullOrWhiteSpace(resumeText) || resumeText.StartsWith("[Unsupported", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var extractionFailedJson = new JObject
-                            {
-                                ["message"] = "Resume text could not be extracted.",
-                                ["reason"] = resumeText,
-                                ["fileHash"] = fileHash
-                            };
-
-                            await _bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, resume.FileName, savedFileName, fileHash, null, null, null, null, "ExtractionFailed", false, extractionFailedJson, null, false, null);
-
-                            results.Add(new
-                            {
-                                FileName = resume.FileName,
-                                Success = false,
-                                SavedFile = savedFileName,
-                                Status = "ExtractionFailed",
-                                IsDuplicate = false,
-                                FileHash = fileHash,
-                                Message = "Resume text could not be extracted."
-                            });
-
-                            notProcessedResumes.Add(new
-                            {
-                                FileName = resume.FileName,
-                                CandidateName = candidateName,
-                                MailId = mailId,
-                                PhoneNumber = phoneNumber,
-                                Reason = "Resume text could not be extracted."
-                            });
-
-                            failedProcessing++;
-                            continue;
-                        }
-
-                        // Step 7.6: Extract candidate details from CV text.
-                        candidateJson = await _bulkResumeService.ParseCandidateResumeJsonAsync(resumeText);
-                        candidateName = _bulkResumeService.GetCandidateName(candidateJson);
-                        mailId = _bulkResumeService.GetJsonString(candidateJson, "Email");
-                        phoneNumber = _bulkResumeService.GetJsonString(candidateJson, "Mobile");
-
-                        // Step 7.7: Check if candidate email already exists.
-                        JObject existingCandidate = await _bulkResumeService.GetExistingCandidateByUsernameOrMailAsync(mailId, mailId);
-
-                        if (existingCandidate != null)
-                        {
-                            var candidateAlreadyExistsJson = new JObject
-                            {
-                                ["message"] = "Candidate already exists. ATS score generation skipped.",
-                                ["existingCandidate"] = existingCandidate,
-                                ["fileHash"] = fileHash
-                            };
-
-                            await _bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, resume.FileName, savedFileName, fileHash, candidateName, mailId, phoneNumber, null, "CandidateAlreadyExists", false, candidateAlreadyExistsJson, candidateJson, false, null);
-
-                            processedButExist.Add(new
-                            {
-                                FileName = resume.FileName,
-                                CandidateName = candidateName,
-                                MailId = mailId,
-                                PhoneNumber = phoneNumber,
-                                Status = "CandidateAlreadyExists",
-                                Message = "Candidate already exists. ATS score generation skipped."
-                            });
-
-                            results.Add(new
-                            {
-                                FileName = resume.FileName,
-                                Success = true,
-                                SavedFile = savedFileName,
-                                Status = "CandidateAlreadyExists",
-                                IsDuplicate = false,
-                                FileHash = fileHash,
-                                CandidateName = candidateName,
-                                MailId = mailId,
-                                PhoneNumber = phoneNumber,
-                                ExistingCandidate = existingCandidate,
-                                Message = "Candidate already exists. ATS score generation skipped."
-                            });
-
-                            successfullyProcessed++;
-                            continue;
-                        }
-
-                        // Step 7.8: Generate ATS prompt.
-                        AtsPromptResult promptResult = await _bulkResumeService.GenerateBulkPromptFromAtsHeadRatingAsync(atsHeadRatingId, jobDescription, resumeText);
-
-                        // Step 7.9: Send ATS prompt to GPT and parse score JSON.
-                        string scoreResponse = await _bulkResumeService.SendGptMessageAsync(promptResult.Prompt);
-                        JObject scoreJson;
-
-                        try
-                        {
-                            scoreJson = _bulkResumeService.CleanAndParseJson(scoreResponse);
-                        }
-                        catch
-                        {
-                            scoreJson = _bulkResumeService.BuildAtsScoreParseFailedJson(scoreResponse, promptResult);
-                        }
-
-                        // Step 7.10: Read ATS status.
-                        string atsStatus = scoreJson["Status"]?.ToString();
-                        bool isShortlisted = _bulkResumeService.IsAtsShortlisted(scoreJson);
-
-                        // Step 7.11: If shortlisted, register candidate and save ATS score by candidate id.
-                        JObject signupResult = null;
-                        long? generatedCandidateId = null;
-                        // Step 7.12: Save final bulk log.
-                        await _bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, resume.FileName, savedFileName, fileHash, candidateName, mailId, phoneNumber, generatedCandidateId, atsStatus, isShortlisted, scoreJson, candidateJson, false, null);
-
-                        if (isShortlisted)
-                        {
-                            signupResult = await _bulkResumeService.RegisterShortlistedCandidateAsync(candidateJson, jobDescription);
-                            bool signupSuccess = signupResult?["Success"]?.Value<bool>() ?? false;
-                            if (signupSuccess == true)
-                            {
-                                long? registeredCandidateId = signupResult["CandidateId"]?.Value<long?>();
-                                await _bulkResumeService.UpdateCandidateIdBulkResumeAtsScoreLog(postId, fileHash, candidateName, mailId, phoneNumber, registeredCandidateId);
-                                if (registeredCandidateId.HasValue && registeredCandidateId.Value > 0)
-                                {
-                                    generatedCandidateId = registeredCandidateId.Value;
-                                    //signupResult["AtsScoreSavedToDb"] = true;
-                                    try
-                                    {
-                                        await _bulkResumeService.SaveAtsResponseToDb(scoreJson.ToString(Formatting.None), (int)registeredCandidateId.Value, promptResult.TotalScore, promptResult.BreakDownArray);
-                                        signupResult["AtsScoreSavedToDb"] = true;
-
-                                    }
-
-                                    catch (Exception ex)
-                                    {
-                                        signupResult["AtsScoreSavedToDb"] = false;
-                                        signupResult["AtsScoreSaveError"] = ex.Message;
-                                    }
-
-                                    if (signupResult["AtsScoreSavedToDb"]?.Value<bool>() == true)
-                                    {
-                                        try
-                                        {
-                                            LmsExamLinkMailRequest mailRequest = new LmsExamLinkMailRequest
-                                            {
-                                                CandidateId = registeredCandidateId.Value,
-                                                CandidateMailId = mailId,
-                                                //CandidateMailId = "suvajit.das@iecsl.co.in",
-                                                CandidateName = candidateName,
-                                                CompanyName = jobDescription.COMPANY_NAME,
-                                                AppliedPost = jobDescription.POST,
-                                                ExamTaggingId = examTaggingId
-                                            };
-
-                                            await _backgroundTaskQueue.QueueBackgroundWorkItem(async token =>
-                                            {
-                                                using var scope = _serviceScopeFactory.CreateScope();
-                                                var lmsExamLinkService = scope.ServiceProvider.GetRequiredService<LmsExamLinkService>();
-
-                                                await lmsExamLinkService.SendBulkResumeExamLinkAsync(mailRequest);
-                                            });
-
-                                            signupResult["LmsExamMailQueued"] = true;
-                                            signupResult["LmsExamMailTo"] = mailId;
-                                        }
-                                        catch (Exception ex)
-                                        {
-                                            signupResult["LmsExamMailQueued"] = false;
-                                            signupResult["LmsExamMailQueueError"] = ex.Message;
-                                        }
-                                    }
-                                }
-                            }
-                            else
-                            {
-                                // Signup failed, but do not stop the flow.
-                                // Step 7.12 will still save BulkResumeAtsScoreLog with CandidateId = null.
-                                signupResult["AtsScoreSavedToDb"] = false;
-                            }
-
-                            scoreJson["ShortlistedSignupResult"] = signupResult;
-                            candidateJson["ShortlistedSignupResult"] = signupResult;
-                            
-                        }
-                        else
-                        {
-                            processedButAtsRejected.Add(new
-                            {
-                                FileName = resume.FileName,
-                                CandidateName = candidateName,
-                                MailId = mailId,
-                                PhoneNumber = phoneNumber,
-                                Status = atsStatus,
-                                Message = "Processed but ATS rejected."
-                            });
-                        }
-
-                        if (isShortlisted)
-                        {
-                            processedAndShortlisted.Add(new
-                            {
-                                FileName = resume.FileName,
-                                CandidateName = candidateName,
-                                MailId = mailId,
-                                PhoneNumber = phoneNumber,
-                                Status = atsStatus,
-                                GeneratedCandidateId = generatedCandidateId,
-                                Message = "Processed and shortlisted."
-                            });
-                        }
-
-                         
-                        // Step 7.13: Add final response for this CV.
-                        results.Add(new
-                        {
-                            FileName = resume.FileName,
-                            Success = true,
-                            SavedFile = savedFileName,
-                            ATSScore = scoreJson,
-                            CandidateJson = candidateJson,
-                            Status = atsStatus,
-                            IsDuplicate = false,
-                            FileHash = fileHash,
-                            CandidateName = candidateName,
-                            MailId = mailId,
-                            PhoneNumber = phoneNumber,
-                            GeneratedCandidateId = generatedCandidateId,
-                            IsShortlisted = isShortlisted,
-                            SignupSuccess = signupResult?["Success"]?.Value<bool>(),
-                            SignupMessage = signupResult?["Message"]?.ToString(),
-                            ShortlistedSignupResult = signupResult
-                        });
-
-                        successfullyProcessed++;
+                        scoreJson = bulkResumeService.CleanAndParseJson(scoreResponse);
                     }
-                    catch (Exception ex)
+                    catch
                     {
-                        if (ex.Message.Contains("Infinity", StringComparison.OrdinalIgnoreCase) &&
-                            (!string.IsNullOrWhiteSpace(candidateName) || !string.IsNullOrWhiteSpace(mailId)))
-                        {
-                            JObject rejectedScoreJson = _bulkResumeService.BuildAtsScoreParseFailedJson(ex.Message, null);
-
-                            try
-                            {
-                                await _bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, resume?.FileName, savedFileName, fileHash, candidateName, mailId, phoneNumber, null, "Rejected", false, rejectedScoreJson, candidateJson, false, null);
-                            }
-                            catch
-                            {
-                                // Ignore logging failure here so this CV can still be returned as processed rejected.
-                            }
-
-                            processedButAtsRejected.Add(new
-                            {
-                                FileName = resume?.FileName,
-                                CandidateName = candidateName,
-                                MailId = mailId,
-                                PhoneNumber = phoneNumber,
-                                Status = "Rejected",
-                                Message = "Processed but ATS rejected due to invalid ATS score response."
-                            });
-
-                            results.Add(new
-                            {
-                                FileName = resume?.FileName,
-                                Success = true,
-                                SavedFile = savedFileName,
-                                ATSScore = rejectedScoreJson,
-                                CandidateJson = candidateJson,
-                                Status = "Rejected",
-                                IsDuplicate = false,
-                                FileHash = fileHash,
-                                CandidateName = candidateName,
-                                MailId = mailId,
-                                PhoneNumber = phoneNumber,
-                                IsShortlisted = false,
-                                Message = "Processed but ATS rejected due to invalid ATS score response."
-                            });
-
-                            successfullyProcessed++;
-                            continue;
-                        }
-
-                        failedProcessing++;
-
-                        notProcessedResumes.Add(new
-                        {
-                            FileName = resume?.FileName,
-                            CandidateName = candidateName,
-                            MailId = mailId,
-                            PhoneNumber = phoneNumber,
-                            Reason = ex.Message
-                        });
-
-                        results.Add(new
-                        {
-                            FileName = resume?.FileName,
-                            Success = false,
-                            SavedFile = savedFileName,
-                            Message = ex.Message
-                        });
+                        scoreJson = bulkResumeService.BuildAtsScoreParseFailedJson(scoreResponse, promptResult);
                     }
-                    finally
+
+                    // 7. Sanitize, tag metadata, determine shortlisting status, and persist score
+                    scoreJson = bulkResumeService.SanitizeAndValidateAtsScoreJson(scoreJson, promptResult);
+                    scoreJson["batchId"] = batchId;
+                    string atsStatus = scoreJson["Status"]?.ToString();
+                    bool isShortlisted = bulkResumeService.IsAtsShortlisted(scoreJson);
+                    scoreJson["manualActionRequired"] = true;
+                    scoreJson["manualActionMessage"] = "HR must manually send the exam link or register the candidate for EAF from the bulk resume action screen.";
+
+                    await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, candidateName, mailId, phoneNumber, atsHeadRatingId, null, atsStatus, isShortlisted, scoreJson, candidateJson, false, null);
+                }
+                catch (Exception ex)
+                {
+                    try
                     {
-                        // Step 7.14: Always delete temporary file.
-                        _bulkResumeService.DeleteTempFile(savedFilePath);
+                        string detailedReason = ex.InnerException != null ? $"{ex.Message} -> {ex.InnerException.Message}" : ex.Message;
+                        JObject errorJson = new JObject
+                        {
+                            ["batchId"] = batchId,
+                            ["message"] = "Background ATS processing failed.",
+                            ["reason"] = detailedReason,
+                            ["details"] = ex.ToString(),
+                            ["fileHash"] = fileHash
+                        };
+
+                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, candidateName, mailId, phoneNumber, atsHeadRatingId, null, "ProcessingFailed", false, errorJson, candidateJson, false, null);
+                    }
+                    catch
+                    {
+                        // Ignore logging failure so remaining resumes in the batch can continue processing without disruption
                     }
                 }
+                finally
+                {
+                    // Clean up active processing lock for this file hash
+                    if (!string.IsNullOrWhiteSpace(fileHash))
+                    {
+                        bulkResumeService.UnregisterActiveProcessingHash(postId, fileHash);
+                    }
+                }
+            });
+        }
+         
+        /// <summary>
+        /// Saves or updates candidate information, profile photograph, CV file, and ATS score log entry directly from LMS or recruitment UI.
+        /// Supports two main LMS workflows:
+        /// 1. Initial creation (CandidateId = 0): Saves candidate metadata, uploads Image &amp; CV, inserts into BulkResumeAtsScoreLog, and returns CandidateID.
+        /// 2. Profile photo update (CandidateId &gt; 0): Uploads new Image, updates BulkResumeAtsScoreLog, and returns CandidateID.
+        /// </summary>
+        /// <param name="request">Multipart form data containing candidate details, job post mappings, optional CV and Image files.</param>
+        /// <returns>HTTP 200 OK with CandidateID on success, or HTTP 400/500 on failure.</returns>
+        [HttpPost("save-candidate-info")]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> SaveCandidateInfo([FromForm] SaveCandidateInfoRequest request)
+        {
+            try
+            {
+                if (request == null)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Request body is required."
+                    });
+                }
 
-                // Step 8: Return all CV processing results.
+                long candidateId = request.CandidateId;
+                if (candidateId == 0 && Request.HasFormContentType)
+                {
+                    if (long.TryParse(Request.Form["CandidateID"], out long cid) && cid > 0) candidateId = cid;
+                    else if (long.TryParse(Request.Form["TempCandidateId"], out long tcid) && tcid > 0) candidateId = tcid;
+                    else if (long.TryParse(Request.Form["BulkResumeAtsScoreLogID"], out long bid) && bid > 0) candidateId = bid;
+                    else if (long.TryParse(Request.Form["Id"], out long id) && id > 0) candidateId = id;
+                }
+
+                int postId = request.PostId;
+                if (postId <= 0 && Request.HasFormContentType)
+                {
+                    if (int.TryParse(Request.Form["PostID"], out int pid) && pid > 0) postId = pid;
+                    else if (int.TryParse(Request.Form["ActualPostId"], out int apid) && apid > 0) postId = apid;
+                    else if (int.TryParse(Request.Form["JobId"], out int jid) && jid > 0) postId = jid;
+                }
+
+                int companyId = request.CompanyId;
+                if (companyId <= 0 && Request.HasFormContentType)
+                {
+                    if (int.TryParse(Request.Form["CompanyID"], out int cid) && cid > 0) companyId = cid;
+                    else if (int.TryParse(Request.Form["Companyid"], out int cidi) && cidi > 0) companyId = cidi;
+                    else if (int.TryParse(Request.Form["ComanyId"], out int cmid) && cmid > 0) companyId = cmid;
+                    else if (int.TryParse(Request.Form["ComanyID"], out int cmidi) && cmidi > 0) companyId = cmidi;
+                }
+
+                int departmentId = request.DepartmentId;
+                if (departmentId <= 0 && Request.HasFormContentType)
+                {
+                    if (int.TryParse(Request.Form["DepartmentID"], out int did) && did > 0) departmentId = did;
+                    else if (int.TryParse(Request.Form["Departmentid"], out int didi) && didi > 0) departmentId = didi;
+                }
+
+                string candidateName = FirstNonEmpty(
+                    request.CandidateName,
+                    Request.HasFormContentType ? Request.Form["CandidateName"].ToString() : null,
+                    Request.HasFormContentType ? Request.Form["Name"].ToString() : null);
+
+                string mailId = FirstNonEmpty(
+                    request.MailId,
+                    Request.HasFormContentType ? Request.Form["MailId"].ToString() : null,
+                    Request.HasFormContentType ? Request.Form["Email"].ToString() : null);
+
+                string phoneNumber = FirstNonEmpty(
+                    request.PhoneNumber,
+                    Request.HasFormContentType ? Request.Form["PhoneNumber"].ToString() : null,
+                    Request.HasFormContentType ? Request.Form["PhoneNo"].ToString() : null,
+                    Request.HasFormContentType ? Request.Form["Mobile"].ToString() : null,
+                    Request.HasFormContentType ? Request.Form["Phone"].ToString() : null);
+
+                // Resolve uploaded Photo / Image file from model binding or form files collection
+                IFormFile? photoFile = request.Image
+                    ?? request.PhotoFile
+                    ?? (Request.HasFormContentType && Request.Form.Files.Count > 0 ? (Request.Form.Files["Image"] ?? Request.Form.Files["PhotoFile"] ?? Request.Form.Files["ImageFile"] ?? Request.Form.Files["Photo"] ?? Request.Form.Files["image"] ?? Request.Form.Files["photo"]) : null);
+
+                // Resolve uploaded CV / Resume file from model binding or form files collection
+                IFormFile? cvFile = request.CV
+                    ?? request.CVFile
+                    ?? (Request.HasFormContentType && Request.Form.Files.Count > 0 ? (Request.Form.Files["CV"] ?? Request.Form.Files["CVFile"] ?? Request.Form.Files["CvFile"] ?? Request.Form.Files["Resume"] ?? Request.Form.Files["ResumeFile"] ?? Request.Form.Files["Cv"] ?? Request.Form.Files["cv"] ?? Request.Form.Files["resume"]) : null);
+
+                // =========================================================================
+                // WORKFLOW 2: Update existing candidate (CandidateId > 0, e.g. updating Image)
+                // =========================================================================
+                if (candidateId > 0)
+                {
+                    JObject existingCandidate = await _bulkResumeService.GetBulkResumeAtsScoreLogByIdAsync(candidateId);
+                    if (existingCandidate == null)
+                    {
+                        return NotFound(new
+                        {
+                            Success = false,
+                            CandidateID = candidateId,
+                            Message = $"Candidate with ID {candidateId} was not found."
+                        });
+                    }
+
+                    int existingPostId = existingCandidate["POST_ID"]?.Value<int>() ?? postId;
+                    int existingCompanyId = existingCandidate["COMPANY_ID"]?.Value<int>() ?? companyId;
+                    int existingDepartmentId = existingCandidate["DEPARTMENT_ID"]?.Value<int>() ?? departmentId;
+                    int existingAtsHeadRatingId = existingCandidate["ATS_HEAD_RATING_ID"]?.Value<int>() ?? request.AtsHeadRatingId;
+                    string existingCandidateName = existingCandidate["CANDIDATE_NAME"]?.ToString() ?? candidateName;
+                    string existingMailId = existingCandidate["MAIL_ID"]?.ToString() ?? mailId;
+                    string existingPhoneNumber = existingCandidate["PHONE_NUMBER"]?.ToString() ?? phoneNumber;
+                    string existingOriginalCv = existingCandidate["CV_NAME"]?.ToString() ?? request.OriginalCvName;
+                    string existingSavedCv = existingCandidate["SAVED_CV_NAME"]?.ToString() ?? request.SavedCvName;
+                    string existingFileHash = existingCandidate["FILE_HASH"]?.ToString() ?? request.FileHash;
+                    string existingStatus = existingCandidate["ATS_STATUS"]?.ToString() ?? request.Status;
+                    bool existingIsShortlisted = existingCandidate["IS_SHORTLISTED"]?.Value<bool>() ?? request.IsShortlisted;
+                    long? existingGeneratedCandidateId = existingCandidate["GENERATED_CANDIDATE_ID"]?.Value<long?>() ?? request.GeneratedCandidateId;
+                    string existingImageLocation = existingCandidate["IMAGE_FILE_LOCATION"]?.ToString() ?? string.Empty;
+                    string existingImageName = FirstNonEmpty(
+                        existingCandidate["ImageName"]?.ToString(),
+                        existingCandidate["IMAGE_NAME"]?.ToString(),
+                        !string.IsNullOrWhiteSpace(existingImageLocation) ? Path.GetFileName(existingImageLocation) : string.Empty);
+
+                    // If a new photo file was uploaded
+                    if (photoFile != null && photoFile.Length > 0)
+                    {
+                        string savedLocation = await _bulkResumeService.SaveBulkProfilePicAsync(photoFile);
+                        if (!string.IsNullOrWhiteSpace(savedLocation))
+                        {
+                            existingImageName = Path.GetFileName(savedLocation);
+                            existingImageLocation = _bulkResumeService.BuildBulkProfilePicLocation(existingImageName);
+                        }
+                    }
+                    else
+                    {
+                        string clientImageName = FirstNonEmpty(request.ImageName, Request.HasFormContentType ? Request.Form["ImageName"].ToString() : null, Request.HasFormContentType ? Request.Form["Photo"].ToString() : null);
+                        if (!string.IsNullOrWhiteSpace(clientImageName))
+                        {
+                            existingImageName = Path.GetFileName(clientImageName);
+                            existingImageLocation = _bulkResumeService.BuildBulkProfilePicLocation(existingImageName);
+                        }
+                    }
+
+                    // If a new CV file was uploaded
+                    if (cvFile != null && cvFile.Length > 0)
+                    {
+                        string uploadFolder = _bulkResumeService.GetUploadFolder();
+                        (string updateSavedCvName, string updateSavedCvPath) = await _bulkResumeService.SaveResumeTempFileAsync(cvFile, uploadFolder);
+                        existingOriginalCv = cvFile.FileName;
+                        existingSavedCv = updateSavedCvName;
+                        existingFileHash = await _bulkResumeService.ComputeFileHashAsync(updateSavedCvPath);
+                    }
+
+                    JObject existingScoreJson = TryParseJsonObject(existingCandidate["FULL_JSON"]?.ToString());
+                    JObject existingCandidateJson = TryParseJsonObject(existingCandidate["CANDIDATE_JSON"]?.ToString());
+
+                    if (existingCandidateJson.HasValues)
+                    {
+                        if (!string.IsNullOrWhiteSpace(existingImageName))
+                            existingCandidateJson["ImageName"] = existingImageName;
+                        if (!string.IsNullOrWhiteSpace(existingImageLocation))
+                            existingCandidateJson["Photo"] = existingImageLocation;
+                    }
+
+                    long? updatedId = await _bulkResumeService.SaveBulkResumeAtsScoreAsync(
+                        existingPostId,
+                        existingCompanyId,
+                        existingDepartmentId,
+                        existingOriginalCv,
+                        existingSavedCv,
+                        existingFileHash,
+                        existingCandidateName,
+                        existingMailId,
+                        existingPhoneNumber,
+                        existingAtsHeadRatingId,
+                        existingGeneratedCandidateId,
+                        existingStatus,
+                        existingIsShortlisted,
+                        existingScoreJson,
+                        existingCandidateJson,
+                        false,
+                        null,
+                        existingImageLocation,
+                        existingImageName,
+                        candidateId);
+
+                    return Ok(new
+                    {
+                        Success = true,
+                        CandidateID = updatedId ?? candidateId
+                    });
+                }
+
+                // =========================================================================
+                // WORKFLOW 1: Insert new candidate (CandidateId == 0 from LMS with CV & Image)
+                // =========================================================================
+                if (postId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "PostId is required."
+                    });
+                }
+
+                int atsHeadRatingId = request.AtsHeadRatingId;
+                if (atsHeadRatingId <= 0 && Request.HasFormContentType)
+                {
+                    int.TryParse(Request.Form["AtsHeadRatingId"], out atsHeadRatingId);
+                }
+
+                ATSJobDescription? jobDescription = null;
+                List<ATSJobDescription> jobs = await _bulkResumeService.GetJobDescriptionsByPostIdAsync(postId);
+                if (jobs.Count > 0)
+                {
+                    jobDescription = jobs.First();
+                }
+
+                // Auto-fetch company, department, and atsHeadRatingId from Job Post if not supplied
+                if (jobDescription != null)
+                {
+                    if (companyId <= 0)
+                        companyId = jobDescription.CompanyID;
+
+                    if (departmentId <= 0)
+                        departmentId = jobDescription.DepartmentID > 0 ? jobDescription.DepartmentID : jobDescription.DEPARTMENT_ID;
+
+                    if (atsHeadRatingId <= 0)
+                        atsHeadRatingId = jobDescription.ATS_HEAD_RATING_ID;
+                }
+
+                // 1. Process and save Image if provided
+                string imageName = FirstNonEmpty(request.ImageName, Request.HasFormContentType ? Request.Form["ImageName"].ToString() : null, Request.HasFormContentType ? Request.Form["Photo"].ToString() : null);
+                string imageFileLocation = string.Empty;
+
+                if (photoFile != null && photoFile.Length > 0)
+                {
+                    string savedLocation = await _bulkResumeService.SaveBulkProfilePicAsync(photoFile);
+                    if (!string.IsNullOrWhiteSpace(savedLocation))
+                    {
+                        imageName = Path.GetFileName(savedLocation);
+                        imageFileLocation = _bulkResumeService.BuildBulkProfilePicLocation(imageName);
+                    }
+                }
+                else if (!string.IsNullOrWhiteSpace(imageName))
+                {
+                    imageName = Path.GetFileName(imageName);
+                    imageFileLocation = _bulkResumeService.BuildBulkProfilePicLocation(imageName);
+                }
+
+                // 2. Process and save CV file to disk if provided
+                string originalCvName = request.OriginalCvName;
+                string savedCvName = request.SavedCvName;
+                string savedFilePath = string.Empty;
+                string fileHash = request.FileHash;
+
+                if (cvFile != null && cvFile.Length > 0)
+                {
+                    string uploadFolder = _bulkResumeService.GetUploadFolder();
+                    (string savedName, string savedPath) = await _bulkResumeService.SaveResumeTempFileAsync(cvFile, uploadFolder);
+                    originalCvName = cvFile.FileName;
+                    savedCvName = savedName;
+                    savedFilePath = savedPath;
+                    fileHash = await _bulkResumeService.ComputeFileHashAsync(savedPath);
+                }
+
+                // Fallback / default candidate details if not explicitly passed
+                if (string.IsNullOrWhiteSpace(candidateName) &&
+                    string.IsNullOrWhiteSpace(mailId) &&
+                    string.IsNullOrWhiteSpace(phoneNumber))
+                {
+                    candidateName = !string.IsNullOrWhiteSpace(originalCvName)
+                        ? Path.GetFileNameWithoutExtension(originalCvName)
+                        : "LMS Candidate";
+                }
+
+                // Initialize candidate profile JSON
+                JObject candidateJson = TryParseJsonObject(request.CandidateJson);
+                if (!candidateJson.HasValues)
+                {
+                    candidateJson = new JObject
+                    {
+                        ["CandidateName"] = candidateName,
+                        ["Name"] = candidateName,
+                        ["Email"] = mailId,
+                        ["MailId"] = mailId,
+                        ["Mobile"] = phoneNumber,
+                        ["PhoneNumber"] = phoneNumber,
+                        ["ImageName"] = imageName,
+                        ["Photo"] = imageFileLocation
+                    };
+                }
+                else
+                {
+                    if (!string.IsNullOrWhiteSpace(candidateName)) { candidateJson["CandidateName"] = candidateName; candidateJson["Name"] = candidateName; }
+                    if (!string.IsNullOrWhiteSpace(mailId)) { candidateJson["Email"] = mailId; candidateJson["MailId"] = mailId; }
+                    if (!string.IsNullOrWhiteSpace(phoneNumber)) { candidateJson["Mobile"] = phoneNumber; candidateJson["PhoneNumber"] = phoneNumber; }
+                    if (!string.IsNullOrWhiteSpace(imageName)) candidateJson["ImageName"] = imageName;
+                    if (!string.IsNullOrWhiteSpace(imageFileLocation)) candidateJson["Photo"] = imageFileLocation;
+                }
+
+                // Initialize initial ATS score JSON and status
+                bool hasCvFileToProcess = !string.IsNullOrWhiteSpace(savedFilePath) && System.IO.File.Exists(savedFilePath);
+                string initialStatus = hasCvFileToProcess ? "Processing" : (string.IsNullOrWhiteSpace(request.Status) ? "LmsApplication" : request.Status);
+
+                JObject initialScoreJson = TryParseJsonObject(request.ScoreJson);
+                if (!initialScoreJson.HasValues)
+                {
+                    initialScoreJson = new JObject
+                    {
+                        ["Source"] = "LMS",
+                        ["Status"] = initialStatus
+                    };
+                }
+
+                // 3. Save candidate record immediately to database to generate CandidateID
+                long? bulkResumeAtsScoreLogId = await _bulkResumeService.SaveBulkResumeAtsScoreAsync(
+                    postId,
+                    companyId,
+                    departmentId,
+                    originalCvName,
+                    savedCvName,
+                    fileHash,
+                    candidateName,
+                    mailId,
+                    phoneNumber,
+                    atsHeadRatingId,
+                    request.GeneratedCandidateId,
+                    initialStatus,
+                    request.IsShortlisted,
+                    initialScoreJson,
+                    candidateJson,
+                    request.IsDuplicate,
+                    request.DuplicateOfLogId,
+                    imageFileLocation,
+                    imageName,
+                    0);
+
+                long generatedCandidateId = bulkResumeAtsScoreLogId ?? 0;
+
+                // 4. If CV file was uploaded, dispatch CV text extraction and ATS scoring to background queue
+                if (hasCvFileToProcess && generatedCandidateId > 0)
+                {
+                    await _backgroundTaskQueue.QueueBackgroundWorkItem(async token =>
+                    {
+                        using var scope = _serviceScopeFactory.CreateScope();
+                        var bulkResumeService = scope.ServiceProvider.GetRequiredService<BulkResumeService>();
+                        await ProcessSingleCandidateAtsScoreInBackgroundAsync(
+                            bulkResumeService,
+                            generatedCandidateId,
+                            postId,
+                            companyId,
+                            departmentId,
+                            atsHeadRatingId,
+                            jobDescription,
+                            originalCvName,
+                            savedCvName,
+                            savedFilePath,
+                            fileHash,
+                            candidateName,
+                            mailId,
+                            phoneNumber,
+                            imageName,
+                            imageFileLocation,
+                            token);
+                    });
+                }
+
+                // 5. Immediately return CandidateID to caller without waiting for AI processing
                 return Ok(new
                 {
                     Success = true,
-                    PostId = postId,
-                    ExamTaggingID = examTaggingId,
-                    ATSHeadRatingID = atsHeadRatingId,
-                    TotalUploaded = totalUploaded,
-                    SuccessfullyProcessed = successfullyProcessed,
-                    FailedProcessing = failedProcessing,
-                    NotProcessedResumes = notProcessedResumes,
-                    ProcessedButExist = processedButExist,
-                    ProcessedButAtsRejected = processedButAtsRejected,
-                    ProcessedAndShortlisted = processedAndShortlisted,
-                    Message = "ATS processing completed."
+                    CandidateID = generatedCandidateId
                 });
             }
             catch (Exception ex)
@@ -504,6 +794,1039 @@ namespace ATS.API.Controllers
                     Message = ex.Message
                 });
             }
+        }
+
+        /// <summary>
+        /// Asynchronously extracts CV text and generates ATS score in the background for a newly saved candidate.
+        /// Updates the candidate row in BulkResumeAtsScoreLog once AI scoring is completed.
+        /// </summary>
+        private async Task ProcessSingleCandidateAtsScoreInBackgroundAsync(
+            BulkResumeService bulkResumeService,
+            long candidateLogId,
+            int postId,
+            int companyId,
+            int departmentId,
+            int atsHeadRatingId,
+            ATSJobDescription? jobDescription,
+            string originalCvName,
+            string savedCvName,
+            string savedFilePath,
+            string fileHash,
+            string candidateName,
+            string mailId,
+            string phoneNumber,
+            string imageName,
+            string imageFileLocation,
+            CancellationToken token)
+        {
+            try
+            {
+                if (candidateLogId <= 0 || !System.IO.File.Exists(savedFilePath))
+                    return;
+
+                // 1. Security scan
+                ResumeSecurityScanResult scanResult = await bulkResumeService.ScanResumeFileAsync(savedFilePath, originalCvName);
+                if (!scanResult.IsSafe)
+                {
+                    var scanFailedJson = new JObject
+                    {
+                        ["message"] = "Resume file failed security scan.",
+                        ["reason"] = scanResult.Message
+                    };
+
+                    await bulkResumeService.SaveBulkResumeAtsScoreAsync(
+                        postId, companyId, departmentId, originalCvName, savedCvName, fileHash,
+                        candidateName, mailId, phoneNumber, atsHeadRatingId, null,
+                        "SecurityScanFailed", false, scanFailedJson, null, false, null,
+                        imageFileLocation, imageName, candidateLogId);
+                    return;
+                }
+
+                // 2. Extract text content from the uploaded resume file
+                string resumeText = await bulkResumeService.ExtractResumeTextAsync(savedFilePath);
+                if (string.IsNullOrWhiteSpace(resumeText) || resumeText.StartsWith("[Unsupported", StringComparison.OrdinalIgnoreCase))
+                {
+                    var extractionFailedJson = new JObject
+                    {
+                        ["message"] = "Resume text could not be extracted.",
+                        ["reason"] = resumeText
+                    };
+
+                    await bulkResumeService.SaveBulkResumeAtsScoreAsync(
+                        postId, companyId, departmentId, originalCvName, savedCvName, fileHash,
+                        candidateName, mailId, phoneNumber, atsHeadRatingId, null,
+                        "ExtractionFailed", false, extractionFailedJson, null, false, null,
+                        imageFileLocation, imageName, candidateLogId);
+                    return;
+                }
+
+                // 3. Prepare structured candidate JSON (Fast-path: if name & email are already provided, avoid redundant AI extraction call)
+                JObject candidateJson = new JObject();
+                bool needsCandidateExtraction = string.IsNullOrWhiteSpace(candidateName) || string.IsNullOrWhiteSpace(mailId);
+
+                if (needsCandidateExtraction)
+                {
+                    try
+                    {
+                        candidateJson = await bulkResumeService.ParseCandidateResumeJsonAsync(resumeText);
+                    }
+                    catch
+                    {
+                        candidateJson = new JObject();
+                    }
+
+                    // Merge / fallback contact info
+                    if (string.IsNullOrWhiteSpace(candidateName))
+                    {
+                        candidateName = bulkResumeService.GetCandidateName(candidateJson);
+                    }
+                    if (string.IsNullOrWhiteSpace(mailId))
+                    {
+                        mailId = bulkResumeService.GetJsonString(candidateJson, "Email");
+                    }
+                    if (string.IsNullOrWhiteSpace(phoneNumber))
+                    {
+                        phoneNumber = bulkResumeService.GetJsonString(candidateJson, "Mobile");
+                        if (string.IsNullOrWhiteSpace(phoneNumber))
+                        {
+                            phoneNumber = bulkResumeService.GetJsonString(candidateJson, "Phone");
+                        }
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(candidateName))
+                {
+                    candidateJson["CandidateName"] = candidateName;
+                    candidateJson["Name"] = candidateName;
+                }
+                if (!string.IsNullOrWhiteSpace(mailId))
+                {
+                    candidateJson["Email"] = mailId;
+                    candidateJson["MailId"] = mailId;
+                }
+                if (!string.IsNullOrWhiteSpace(phoneNumber))
+                {
+                    candidateJson["Mobile"] = phoneNumber;
+                    candidateJson["PhoneNumber"] = phoneNumber;
+                }
+                if (!string.IsNullOrWhiteSpace(imageName))
+                {
+                    candidateJson["ImageName"] = imageName;
+                }
+                if (!string.IsNullOrWhiteSpace(imageFileLocation))
+                {
+                    candidateJson["Photo"] = imageFileLocation;
+                }
+
+                // 5. Check ATS rating criteria and Job Description
+                if (jobDescription == null)
+                {
+                    List<ATSJobDescription> jobs = await bulkResumeService.GetJobDescriptionsByPostIdAsync(postId);
+                    jobDescription = jobs.FirstOrDefault();
+                }
+
+                if (atsHeadRatingId <= 0 && jobDescription != null)
+                {
+                    atsHeadRatingId = jobDescription.ATS_HEAD_RATING_ID;
+                }
+
+                JObject scoreJson;
+                string status = "LmsApplication";
+                bool isShortlisted = false;
+
+                if (atsHeadRatingId > 0 && jobDescription != null)
+                {
+                    try
+                    {
+                        AtsPromptResult promptResult = await bulkResumeService.GenerateBulkPromptFromAtsHeadRatingAsync(atsHeadRatingId, jobDescription, resumeText, candidateJson);
+                        string scoreResponse = await bulkResumeService.SendGptMessageAsync(promptResult.Prompt);
+
+                        try
+                        {
+                            scoreJson = bulkResumeService.CleanAndParseJson(scoreResponse);
+                        }
+                        catch
+                        {
+                            scoreJson = bulkResumeService.BuildAtsScoreParseFailedJson(scoreResponse, promptResult);
+                        }
+
+                        scoreJson = bulkResumeService.SanitizeAndValidateAtsScoreJson(scoreJson, promptResult);
+                        status = scoreJson["Status"]?.ToString() ?? "Evaluated";
+                        isShortlisted = bulkResumeService.IsAtsShortlisted(scoreJson);
+                    }
+                    catch (Exception gptEx)
+                    {
+                        scoreJson = new JObject
+                        {
+                            ["Source"] = "LMS",
+                            ["Status"] = "AtsGenerationFailed",
+                            ["Error"] = gptEx.Message
+                        };
+                        status = "AtsGenerationFailed";
+                    }
+                }
+                else
+                {
+                    scoreJson = new JObject
+                    {
+                        ["Source"] = "LMS",
+                        ["Status"] = "LmsApplication",
+                        ["Note"] = "ATS rating configuration is not mapped for this job post."
+                    };
+                }
+
+                // 6. Update candidate row in BulkResumeAtsScoreLog with calculated score, candidate JSON, status, and shortlist flag
+                await bulkResumeService.SaveBulkResumeAtsScoreAsync(
+                    postId,
+                    companyId,
+                    departmentId,
+                    originalCvName,
+                    savedCvName,
+                    fileHash,
+                    candidateName,
+                    mailId,
+                    phoneNumber,
+                    atsHeadRatingId,
+                    null,
+                    status,
+                    isShortlisted,
+                    scoreJson,
+                    candidateJson,
+                    false,
+                    null,
+                    imageFileLocation,
+                    imageName,
+                    candidateLogId);
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    var errorJson = new JObject
+                    {
+                        ["message"] = "Background candidate ATS evaluation failed.",
+                        ["error"] = ex.Message
+                    };
+
+                    await bulkResumeService.SaveBulkResumeAtsScoreAsync(
+                        postId, companyId, departmentId, originalCvName, savedCvName, fileHash,
+                        candidateName, mailId, phoneNumber, atsHeadRatingId, null,
+                        "EvaluationError", false, errorJson, null, false, null,
+                        imageFileLocation, imageName, candidateLogId);
+                }
+                catch
+                {
+                    // Ignore secondary logging failures
+                }
+            }
+        }
+
+        /// <summary>
+        /// Retrieves the bulk resume pipeline report with filters and aggregation metrics (Total, Shortlisted, Rejected, Exam Pending, Created).
+        /// </summary>
+        /// <param name="companyId">Optional filter for Company ID.</param>
+        /// <param name="departmentId">Optional filter for Department ID.</param>
+        /// <param name="postId">Optional filter for Job Post ID.</param>
+        /// <param name="keyword">Optional text search keyword for candidate name, email, or post.</param>
+        /// <param name="fromDate">Optional start date filter.</param>
+        /// <param name="toDate">Optional end date filter.</param>
+        /// <param name="take">Maximum number of records to return (defaults to 500).</param>
+        /// <returns>HTTP 200 OK containing filter parameters, summary metrics, and detailed row data.</returns>
+        [HttpGet("bulk-resume-pipeline-report")]
+        public async Task<IActionResult> GetBulkResumePipelineReport(
+            [FromQuery] int? companyId,
+            [FromQuery] int? departmentId,
+            [FromQuery] int? postId,
+            [FromQuery] string? keyword,
+            [FromQuery] DateTime? fromDate,
+            [FromQuery] DateTime? toDate,
+            [FromQuery] int take = 500)
+        {
+            try
+            {
+                List<Dictionary<string, object?>> rows = await _bulkResumeService.GetBulkResumeAtsReportAsync(
+                    companyId,
+                    departmentId,
+                    postId,
+                    keyword,
+                    fromDate,
+                    toDate,
+                    take);
+
+                // Calculate summary aggregation statistics
+                int total = rows.Count;
+                int atsShortlisted = rows.Count(x => string.Equals(GetReportValue(x, "ATS_STATUS")?.ToString(), "Shortlisted", StringComparison.OrdinalIgnoreCase) || GetReportBool(x, "IS_SHORTLISTED"));
+                int atsRejected = rows.Count(x => string.Equals(GetReportValue(x, "ATS_STATUS")?.ToString(), "Rejected", StringComparison.OrdinalIgnoreCase));
+                int examPending = rows.Count(x => string.Equals(GetReportValue(x, "EXAM_STATUS_DISPLAY")?.ToString(), "Pending", StringComparison.OrdinalIgnoreCase));
+                int finalCreated = rows.Count(x => GetReportValue(x, "GENERATED_CANDIDATE_ID") != null);
+
+                return Ok(new
+                {
+                    Success = true,
+                    Filters = new
+                    {
+                        companyId,
+                        departmentId,
+                        postId,
+                        keyword,
+                        fromDate,
+                        toDate,
+                        take
+                    },
+                    Summary = new
+                    {
+                        Total = total,
+                        AtsShortlisted = atsShortlisted,
+                        AtsRejected = atsRejected,
+                        ExamPending = examPending,
+                        FinalCreated = finalCreated
+                    },
+                    Data = rows
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Success = false,
+                    Message = ex.Message
+                });
+            }
+        }
+
+        /// <summary>
+        /// Safely extracts a nullable value from a dictionary row, mapping DBNull to null.
+        /// </summary>
+        private static object? GetReportValue(Dictionary<string, object?> row, string key)
+        {
+            return row.TryGetValue(key, out object? value) && value != DBNull.Value ? value : null;
+        }
+
+        /// <summary>
+        /// Safely evaluates a boolean flag from a dictionary row.
+        /// </summary>
+        private static bool GetReportBool(Dictionary<string, object?> row, string key)
+        {
+            object? value = GetReportValue(row, key);
+
+            if (value == null)
+                return false;
+
+            if (value is bool boolValue)
+                return boolValue;
+
+            return bool.TryParse(value.ToString(), out bool parsed) && parsed;
+        }
+
+        /// <summary>
+        /// Retrieves the list of active companies for bulk resume dropdown filters.
+        /// </summary>
+        /// <returns>HTTP 200 OK with company master data list.</returns>
+        [HttpGet("bulk-resume-company-list")]
+        public async Task<IActionResult> GetBulkResumeCompanyList()
+        {
+            try
+            {
+                return Ok(new
+                {
+                    Success = true,
+                    Data = await _bulkResumeService.GetBulkResumeCompanyListAsync()
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Success = false, Message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Retrieves the list of departments for bulk resume dropdown filters.
+        /// </summary>
+        /// <returns>HTTP 200 OK with department master data list.</returns>
+        [HttpGet("bulk-resume-department-list")]
+        public async Task<IActionResult> GetBulkResumeDepartmentList()
+        {
+            try
+            {
+                return Ok(new
+                {
+                    Success = true,
+                    Data = await _bulkResumeService.GetBulkResumeDepartmentListAsync()
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Success = false, Message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Retrieves the list of job posts filtered optionally by company and department.
+        /// </summary>
+        /// <param name="companyId">Optional company identifier filter.</param>
+        /// <param name="departmentId">Optional department identifier filter.</param>
+        /// <returns>HTTP 200 OK with job post list.</returns>
+        [HttpGet("bulk-resume-post-list")]
+        public async Task<IActionResult> GetBulkResumePostList([FromQuery] int? companyId, [FromQuery] int? departmentId)
+        {
+            try
+            {
+                return Ok(new
+                {
+                    Success = true,
+                    Data = await _bulkResumeService.GetBulkResumePostListAsync(companyId, departmentId)
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { Success = false, Message = ex.Message });
+            }
+        }
+
+        /// <summary>
+        /// Returns a lightweight, display-safe candidate snapshot for LMS / Exam portal interfaces.
+        /// </summary>
+        /// <remarks>
+        /// Exam portal candidate snapshot:
+        /// LMS or exam UI calls this API using the TempCandidateId (BulkResumeAtsScoreLogID)
+        /// prior to rendering the exam page. It returns only display-safe candidate details, omitting full ATS JSON.
+        /// </remarks>
+        /// <param name="CandidateId">The temporary candidate ID (BulkResumeAtsScoreLogID).</param>
+        /// <returns>HTTP 200 OK with candidate snapshot details, or HTTP 404 NotFound if not found.</returns>
+        [HttpGet("resume-candidate")]
+        public async Task<IActionResult> GetBulkResumeCandidateSnapshot([FromQuery] long CandidateId)
+        {
+            try
+            {
+                if (CandidateId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Candidate id is required."
+                    });
+                }
+
+                JObject tempCandidate = await _bulkResumeService.GetBulkResumeAtsScoreLogByIdAsync(CandidateId);
+
+                if (tempCandidate == null)
+                {
+                    return NotFound(new
+                    {
+                        Success = false,
+                        CandidateId = CandidateId,
+                        Message = "Candidate not found."
+                    });
+                }
+
+                int postId = tempCandidate["POST_ID"]?.Value<int>() ?? 0;
+                string candidateJsonText = tempCandidate["CANDIDATE_JSON"]?.ToString();
+                JObject candidateJson = TryParseJsonObject(candidateJsonText);
+                List<ATSJobDescription> jobs = postId > 0
+                    ? await _bulkResumeService.GetJobDescriptionsByPostIdAsync(postId)
+                    : new List<ATSJobDescription>();
+
+                ATSJobDescription? jobDescription = jobs.FirstOrDefault();
+                string candidateName = FirstNonEmpty(
+                    tempCandidate["CANDIDATE_NAME"]?.ToString(),
+                    _bulkResumeService.GetCandidateName(candidateJson));
+                string email = FirstNonEmpty(
+                    tempCandidate["MAIL_ID"]?.ToString(),
+                    _bulkResumeService.GetJsonString(candidateJson, "Email"));
+                string phone = FirstNonEmpty(
+                    tempCandidate["PHONE_NUMBER"]?.ToString(),
+                    _bulkResumeService.GetJsonString(candidateJson, "Mobile"));
+                string professionalExperience = FirstNonEmpty(
+                    GetJsonStringAny(candidateJson, "ProfessionalExperience", "ProfessionalExp", "TotalExperience", "Experience", "WorkExperience"),
+                    "-");
+                string generatedCandidateId = tempCandidate["GENERATED_CANDIDATE_ID"]?.ToString();
+                string profilePicLocation = tempCandidate["IMAGE_FILE_LOCATION"]?.ToString()?.Trim() ?? string.Empty;
+                string imageNameFromLog = FirstNonEmpty(
+                    tempCandidate["ImageName"]?.ToString()?.Trim(),
+                    tempCandidate["IMAGE_NAME"]?.ToString()?.Trim(),
+                    !string.IsNullOrWhiteSpace(profilePicLocation) ? Path.GetFileName(profilePicLocation) : string.Empty);
+                bool profilePicAvailable = !string.IsNullOrWhiteSpace(profilePicLocation);
+
+                return Ok(new
+                {
+                    Success = true,
+                    CandidateSnapshot = new
+                    {
+                        Candidate = DisplayOrDash(candidateName),
+                        CandidateID = CandidateId,
+                        RegistrationNo = DisplayOrDash(generatedCandidateId),
+                        Email = DisplayOrDash(email),
+                        Phone = DisplayOrDash(phone),
+                        ProfessionalExp = DisplayOrDash(professionalExperience),
+                        AppliedPost = DisplayOrDash(jobDescription?.POST),
+                        ProfilePicAvailable = profilePicAvailable,
+                        ProfilePicLocation = DisplayOrDash(profilePicLocation),
+                        ImageName = DisplayOrDash(imageNameFromLog)
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Success = false,
+                    Message = ex.Message
+                });
+            }
+        }
+
+        /// <summary>
+        /// Manually initiates candidate registration (EAF generation) in the core recruitment system.
+        /// </summary>
+        /// <remarks>
+        /// Manual HR Send EAF / Candidate registration flow:
+        /// When HR clicks "Send EAF" or "Generate ID" for a candidate, this endpoint calls 
+        /// <see cref="BulkResumeService.RegisterBulkResumeCandidateManuallyAsync"/>.
+        /// It registers the candidate in the recruitment database, generates a Candidate ID,
+        /// sends login credentials via email, and updates the BulkResumeAtsScoreLog.
+        /// </remarks>
+        /// <param name="request">Payload containing the TempCandidateId (BulkResumeAtsScoreLogID) and an optional HR manual reason.</param>
+        /// <returns>HTTP 200 OK on success, or HTTP 400 Bad Request on failure.</returns>
+        [HttpPost("bulk-resume-send-eaf")]
+        [HttpPost("bulk-resume-create-candidate")]
+        public async Task<IActionResult> SendBulkResumeEafManually([FromBody] BulkResumeManualExamLinkRequest request)
+        {
+            try
+            {
+                if (request == null || request.TempCandidateId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Temp candidate id is required."
+                    });
+                }
+
+                JObject result = await _bulkResumeService.RegisterBulkResumeCandidateManuallyAsync(request.TempCandidateId, request.ManualReason ?? string.Empty);
+
+                bool success = result["Success"]?.Value<bool>() ?? false;
+                if (success)
+                {
+                    return Ok(result);
+                }
+
+                return BadRequest(result);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Success = false,
+                    Message = ex.Message
+                });
+            }
+        }
+
+        /// <summary>
+        /// Manually triggers dispatch of an LMS exam link email to a bulk resume candidate.
+        /// </summary>
+        /// <remarks>
+        /// Allows HR to send an exam link for both ATS-shortlisted and ATS-failed candidates.
+        /// Supports situations where JD exam tagging was performed after the initial upload.
+        /// Requires a valid ExamTaggingID on the associated Job Description.
+        /// </remarks>
+        /// <param name="request">Payload specifying the candidate identifier and manual reason.</param>
+        /// <returns>HTTP 200 OK indicating the email was queued, or HTTP 400 Bad Request if prerequisites fail.</returns>
+        [HttpPost("bulk-resume-send-exam-link")]
+        public async Task<IActionResult> SendBulkResumeExamLinkManually([FromBody] BulkResumeManualExamLinkRequest request)
+        {
+            try
+            {
+                if (request == null || request.TempCandidateId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Temp candidate id is required."
+                    });
+                }
+
+                JObject tempCandidate = await _bulkResumeService.GetBulkResumeAtsScoreLogByIdAsync(request.TempCandidateId);
+
+                if (tempCandidate == null)
+                {
+                    return NotFound(new
+                    {
+                        Success = false,
+                        Message = "Temp candidate not found."
+                    });
+                }
+
+                int postId = tempCandidate["POST_ID"]?.Value<int>() ?? 0;
+                string mailId = tempCandidate["MAIL_ID"]?.ToString();
+
+                if (string.IsNullOrWhiteSpace(mailId))
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        TempCandidateId = request.TempCandidateId,
+                        Message = "Candidate email is not available. Exam link cannot be sent."
+                    });
+                }
+
+                List<ATSJobDescription> jobs = await _bulkResumeService.GetJobDescriptionsByPostIdAsync(postId);
+
+                if (jobs.Count == 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        TempCandidateId = request.TempCandidateId,
+                        Message = "Job description not found."
+                    });
+                }
+
+                ATSJobDescription jobDescription = jobs.First();
+
+                if (jobDescription.ExamTaggingID == 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        TempCandidateId = request.TempCandidateId,
+                        Message = "Exam is not tagged for this job post. Manual exam link cannot be sent."
+                    });
+                }
+
+                int companyId = jobDescription.CompanyID > 0
+                    ? jobDescription.CompanyID
+                    : (tempCandidate["COMPANY_ID"]?.Value<int>() ?? 0);
+
+                int departmentId = jobDescription.DepartmentID > 0
+                    ? jobDescription.DepartmentID
+                    : (jobDescription.DEPARTMENT_ID > 0 ? jobDescription.DEPARTMENT_ID : (tempCandidate["DEPARTMENT_ID"]?.Value<int>() ?? 0));
+
+                var mailRequest = new LmsExamLinkMailRequest
+                {
+                    CandidateId = request.TempCandidateId,
+                    CandidateMailId = mailId,
+                    CandidateName = tempCandidate["CANDIDATE_NAME"]?.ToString(),
+                    CompanyName = jobDescription.COMPANY_NAME,
+                    AppliedPost = jobDescription.POST,
+                    DepartmentName = jobDescription.DEPARTMENT_NAME,
+                    ExamTaggingId = jobDescription.ExamTaggingID,
+                    CompanyId = companyId,
+                    DepartmentId = departmentId,
+                    PostId = postId
+                };
+
+                // Queue exam link email dispatch via background queue
+                await QueueBulkResumeExamLinkAsync(mailRequest);
+
+                return Ok(new
+                {
+                    Success = true,
+                    TempCandidateId = request.TempCandidateId,
+                    CandidateName = tempCandidate["CANDIDATE_NAME"]?.ToString(),
+                    MailId = mailId,
+                    AtsStatus = tempCandidate["ATS_STATUS"]?.ToString(),
+                    ManualReason = request.ManualReason,
+                    Message = "Manual exam link mail queued."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Success = false,
+                    Message = ex.Message
+                });
+            }
+        }
+
+        /// <summary>
+        /// Generates an LMS assessment exam link for a given Job Post, Company, and Department with CandidateId = 0.
+        /// Used by recruitment UI when selecting Company, Department, and Post to generate a generic exam link prior to candidate identification.
+        /// </summary>
+        /// <param name="postId">The target Job Post ID.</param>
+        /// <param name="companyId">Optional Company ID (auto-fetched from Job Post if not provided).</param>
+        /// <param name="departmentId">Optional Department ID (auto-fetched from Job Post if not provided).</param>
+        /// <param name="candidateId">Candidate ID (defaults to 0 for generic exam links).</param>
+        /// <returns>HTTP 200 OK with the generated ExamLink, ExamTaggingId, and job metadata.</returns>
+        [HttpGet("generate-exam-link")]
+        [HttpPost("generate-exam-link")]
+        public async Task<IActionResult> GenerateExamLink(
+            [FromQuery] int postId,
+            [FromQuery] int? companyId = null,
+            [FromQuery] int? departmentId = null,
+            [FromQuery] long candidateId = 0)
+        {
+            try
+            {
+                if (postId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "PostId is required."
+                    });
+                }
+
+                List<ATSJobDescription> jobs = await _bulkResumeService.GetJobDescriptionsByPostIdAsync(postId);
+
+                if (jobs.Count == 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        PostId = postId,
+                        Message = "Job description not found."
+                    });
+                }
+
+                ATSJobDescription jobDescription = jobs.First();
+
+                if (jobDescription.ExamTaggingID == 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        PostId = postId,
+                        Post = jobDescription.POST,
+                        Message = "Exam is not tagged for this job post. Exam link cannot be generated."
+                    });
+                }
+
+                int resolvedCompanyId = (companyId.HasValue && companyId.Value > 0)
+                    ? companyId.Value
+                    : jobDescription.CompanyID;
+
+                int resolvedDepartmentId = (departmentId.HasValue && departmentId.Value > 0)
+                    ? departmentId.Value
+                    : (jobDescription.DepartmentID > 0 ? jobDescription.DepartmentID : jobDescription.DEPARTMENT_ID);
+
+                string companyName = jobDescription.COMPANY_NAME ?? string.Empty;
+                string postName = jobDescription.POST ?? jobDescription.JobTitle ?? string.Empty;
+                string departmentName = jobDescription.DEPARTMENT_NAME ?? string.Empty;
+
+                string examLink = _lmsExamLinkService.BuildExamLink(
+                    jobDescription.ExamTaggingID,
+                    resolvedCompanyId,
+                    resolvedDepartmentId,
+                    postId,
+                    candidateId,
+                    string.Empty,
+                    companyName,
+                    postName,
+                    departmentName);
+
+                return Ok(new
+                {
+                    Success = true,
+                    PostId = postId,
+                    CompanyId = resolvedCompanyId,
+                    DepartmentId = resolvedDepartmentId,
+                    ExamTaggingId = jobDescription.ExamTaggingID,
+                    CandidateId = candidateId,
+                    AppliedPost = postName,
+                    PostName = postName,
+                    CompanyName = companyName,
+                    DepartmentName = departmentName,
+                    ExamLink = examLink
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Success = false,
+                    Message = ex.Message
+                });
+            }
+        }
+
+        /// <summary>
+        /// Webhook callback endpoint invoked by LMS to submit exam results for single or batch candidate submissions.
+        /// </summary>
+        /// <param name="request">Dynamic JSON token containing either a single object or an array of <see cref="BulkResumeExamResultRequest"/>.</param>
+        /// <returns>HTTP 200 OK with processing results for each candidate.</returns>
+        [HttpPost("bulk-resume-exam-result")]
+        public async Task<IActionResult> BulkResumeExamResult([FromBody] JToken request)
+        {
+            try
+            {
+                if (request == null)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Request body is required."
+                    });
+                }
+
+                List<BulkResumeExamResultRequest> requests;
+
+                // Support both single-object and JSON array payloads
+                if (request.Type == JTokenType.Array)
+                {
+                    requests = request.ToObject<List<BulkResumeExamResultRequest>>();
+                }
+                else
+                {
+                    requests = new List<BulkResumeExamResultRequest>
+                    {
+                        request.ToObject<BulkResumeExamResultRequest>()
+                    };
+                }
+
+                var results = new List<object>();
+
+                foreach (var item in requests)
+                {
+                    results.Add(await ProcessBulkResumeExamResult(item));
+                }
+
+                if (results.Count == 1)
+                    return Ok(results[0]);
+
+                return Ok(results);
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Success = false,
+                    Message = ex.Message
+                });
+            }
+        }
+
+        /// <summary>
+        /// Handles the business logic for recording an LMS exam result against either a permanent recruitment candidate
+        /// (<c>HEAD_ATS_SCORE</c>) or a temporary bulk resume candidate log (<c>BulkResumeAtsScoreLog</c>).
+        /// </summary>
+        /// <param name="request">Exam result payload containing marks, shortlist status, and candidate identifiers.</param>
+        /// <returns>Response object indicating updated table or error details.</returns>
+        private async Task<object> ProcessBulkResumeExamResult(BulkResumeExamResultRequest request)
+        {
+            try
+            {
+                if (request == null)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Request body is required."
+                    });
+                }
+
+                /*
+                 * LMS callback flow:
+                 * 1. candidateId can be a real recruitment CandidateId.
+                 * 2. If that real candidate exists, save the exam result into HEAD_ATS_SCORE.
+                 * 3. If no real candidate exists, treat candidateId as TempCandidateId
+                 *    (BulkResumeAtsScoreLogID) and update BulkResumeAtsScoreLog.
+                 * 4. If neither record exists, return NotFound.
+                 */
+                long candidateIdFromLms = request.CandidateId.GetValueOrDefault();
+                long tempCandidateId = request.TempCandidateId.GetValueOrDefault() > 0
+                    ? request.TempCandidateId.GetValueOrDefault()
+                    : candidateIdFromLms;
+                decimal examMarksObtainScore = request.ExamMarksObtainScore;
+                bool isShortlisted = request.IsShortlisted;
+
+                if (candidateIdFromLms <= 0 && tempCandidateId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Candidate id is required."
+                    });
+                }
+
+                // Check if candidate exists in primary recruitment table
+                if (candidateIdFromLms > 0 && await _bulkResumeService.RecruitmentCandidateExistsAsync(candidateIdFromLms))
+                {
+                    await _bulkResumeService.SaveLmsExamResultToHeadAtsScoreAsync(candidateIdFromLms, examMarksObtainScore, isShortlisted);
+
+                    return Ok(new
+                    {
+                        Success = true,
+                        CandidateId = candidateIdFromLms,
+                        ExamMarksObtainScore = examMarksObtainScore,
+                        IsShortlisted = isShortlisted,
+                        UpdatedTable = "HEAD_ATS_SCORE",
+                        Message = "Exam result saved for existing recruitment candidate."
+                    });
+                }
+
+                // Check if temporary bulk candidate log exists
+                JObject tempCandidate = await _bulkResumeService.GetBulkResumeAtsScoreLogByIdAsync(tempCandidateId);
+
+                if (tempCandidate != null)
+                {
+                    await _bulkResumeService.UpdateBulkResumeExamResultAsync(tempCandidateId, examMarksObtainScore, isShortlisted, null);
+
+                    return Ok(new
+                    {
+                        Success = true,
+                        TempCandidateId = tempCandidateId,
+                        ExamMarksObtainScore = examMarksObtainScore,
+                        IsShortlisted = isShortlisted,
+                        CandidateName = tempCandidate["CANDIDATE_NAME"]?.ToString(),
+                        MailId = tempCandidate["MAIL_ID"]?.ToString(),
+                        PhoneNumber = tempCandidate["PHONE_NUMBER"]?.ToString(),
+                        UpdatedTable = "BulkResumeAtsScoreLog",
+                        Message = "Exam result saved for temporary bulk resume candidate."
+                    });
+                }
+
+                return NotFound(new
+                {
+                    Success = false,
+                    CandidateId = candidateIdFromLms > 0 ? (long?)candidateIdFromLms : null,
+                    TempCandidateId = tempCandidateId > 0 ? (long?)tempCandidateId : null,
+                    Message = "Candidate id was not found in recruitment candidates or BulkResumeAtsScoreLog."
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new
+                {
+                    Success = false,
+                    Message = ex.Message
+                });
+            }
+        }
+
+        /// <summary>
+        /// Attempts to parse a JSON string into a <see cref="JObject"/>, returning an empty object if parsing fails.
+        /// </summary>
+        /// <param name="jsonText">Raw JSON text.</param>
+        /// <returns>Parsed <see cref="JObject"/> or an empty <see cref="JObject"/>.</returns>
+        private static JObject TryParseJsonObject(string? jsonText)
+        {
+            if (string.IsNullOrWhiteSpace(jsonText))
+                return new JObject();
+
+            try
+            {
+                return JObject.Parse(jsonText);
+            }
+            catch
+            {
+                return new JObject();
+            }
+        }
+
+        /// <summary>
+        /// Returns the first non-null, non-whitespace string from a collection of candidate strings.
+        /// </summary>
+        /// <param name="values">Array of candidate strings in priority order.</param>
+        /// <returns>First trimmed non-empty string or <see cref="string.Empty"/>.</returns>
+        private static string FirstNonEmpty(params string?[] values)
+        {
+            foreach (string? value in values)
+            {
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value.Trim();
+            }
+
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Returns a trimmed string or a dash ("-") placeholder if null or empty.
+        /// </summary>
+        /// <param name="value">Input string value.</param>
+        /// <returns>Trimmed string or "-".</returns>
+        private static string DisplayOrDash(string? value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? "-" : value.Trim();
+        }
+
+        /// <summary>
+        /// Validates that the provided <see cref="ATSJobDescription"/> contains meaningful text content.
+        /// </summary>
+        /// <param name="jobDescription">Job description model to inspect.</param>
+        /// <returns><c>true</c> if valid words are found; otherwise <c>false</c>.</returns>
+        private static bool HasProperJobDescription(ATSJobDescription jobDescription)
+        {
+            if (jobDescription == null)
+                return false;
+
+            string jdText = string.Join(" ", new[]
+            {
+                jobDescription.JobTitle,
+                jobDescription.Objectives,
+                jobDescription.JobDescription,
+                jobDescription.Age,
+                jobDescription.Qualifications,
+                jobDescription.JobResponsibility,
+                jobDescription.RequiredSkill,
+                jobDescription.TechnicalScope,
+                jobDescription.Experience,
+                jobDescription.Others,
+                jobDescription.Compensate,
+                jobDescription.AdministrativeScope
+            });
+
+            return jdText
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                .Any(word => word.Trim().Length >= 3);
+        }
+
+        /// <summary>
+        /// Searches a <see cref="JObject"/> for the first property matching any of the specified names and returns its non-empty string value.
+        /// </summary>
+        /// <param name="json">Source JSON object.</param>
+        /// <param name="propertyNames">Candidate property names in priority order.</param>
+        /// <returns>Found property value string, or <see cref="string.Empty"/>.</returns>
+        private static string GetJsonStringAny(JObject json, params string[] propertyNames)
+        {
+            foreach (string propertyName in propertyNames)
+            {
+                string value = json[propertyName]?.ToString()?.Trim() ?? string.Empty;
+
+                if (!string.IsNullOrWhiteSpace(value))
+                    return value;
+            }
+
+            return string.Empty;
+        }
+
+        /// <summary>
+        /// Extracts the most informative error or success message from a signup response JSON.
+        /// </summary>
+        /// <param name="signupResult">Signup response JSON.</param>
+        /// <param name="fallbackMessage">Default message if none found in JSON.</param>
+        /// <returns>Descriptive message string.</returns>
+        private static string GetSignupResultMessage(JObject signupResult, string fallbackMessage)
+        {
+            if (signupResult == null)
+                return fallbackMessage;
+
+            string message = FirstNonEmpty(
+                signupResult["Message"]?.ToString(),
+                signupResult["RegisterCandidateResult"]?.ToString(),
+                signupResult["RawResponse"]?.ToString());
+
+            return string.IsNullOrWhiteSpace(message) ? fallbackMessage : message;
+        }
+
+        /// <summary>
+        /// Queues an LMS exam link email dispatch to the background worker.
+        /// </summary>
+        /// <param name="mailRequest">Email request details.</param>
+        private async Task QueueBulkResumeExamLinkAsync(LmsExamLinkMailRequest mailRequest)
+        {
+            /*
+             * Shared LMS mail queue helper:
+             * Exam links are queued only after a manual HR action.
+             */
+            await _backgroundTaskQueue.QueueBackgroundWorkItem(async token =>
+            {
+                using var scope = _serviceScopeFactory.CreateScope();
+                var lmsExamLinkService = scope.ServiceProvider.GetRequiredService<LmsExamLinkService>();
+
+                await lmsExamLinkService.SendBulkResumeExamLinkAsync(mailRequest);
+            });
         }
     }
 }

@@ -417,15 +417,12 @@ namespace ATS.API.Controllers
                 });
             }
         }
-
-        private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId, string jobText, string resumeText)
+        private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId,string jobText,string resumeText)
         {
             var result = new AtsPromptResult();
 
             try
             {
-                string profileJson = string.Empty;
-
                 var parameters = new Dictionary<string, object>
                 {
                     { "@CandidateId", candidateId }
@@ -434,101 +431,248 @@ namespace ATS.API.Controllers
                 DataTable dt = await _dataService.GetDataAsync(
                     "SP_ATS_PROMT",
                     parameters,
-                    _ConnectionString
-                );
+                    _ConnectionString);
 
                 if (dt.Rows.Count == 0 || dt.Rows[0]["AtsPrompt"] == DBNull.Value)
                 {
-                    result.Prompt = JsonConvert.SerializeObject(
-                        new { error = "No data returned from stored procedure." }
-                    );
+                    result.Prompt = JsonConvert.SerializeObject(new
+                    {
+                        error = "No data returned from stored procedure."
+                    });
+
                     return result;
                 }
 
-                profileJson = dt.Rows[0]["AtsPrompt"].ToString();
-                var jObj = JObject.Parse(profileJson);
+                // ATS Configuration
+                string profileJson = dt.Rows[0]["AtsPrompt"].ToString();
+                JObject atsConfig = JObject.Parse(profileJson);
 
-                decimal totalScore = jObj["Total Score"]?.Value<decimal>() ?? 100;
+                // Resume JSON (if available)
+                JObject resumeObj = null;
 
-                var breakDownArray = JsonConvert.DeserializeObject<List<RatingItem>>(
-                    jObj["BreakDownScore"]?.ToString() ?? "[]"
-                );
+                try
+                {
+                    resumeObj = JObject.Parse(resumeText);
+                }
+                catch
+                {
+                    // Resume is plain text
+                }
 
-                var resultStatusArray = JsonConvert.DeserializeObject<List<ResultStatusItem>>(
-                    jObj["Result Status"]?.ToString() ?? "[]"
-                );
+                string extractedResumeText =
+                    resumeObj?["ResumeText"]?.ToString()
+                    ?? resumeText
+                    ?? "";
 
-                // -------- Prompt helpers --------
+                JToken candidateProfile =atsConfig["CandidateProfile"]?? resumeObj?["CandidateProfile"];
 
-                string resultRules = string.Join(", ",
-                    resultStatusArray.Select(x => $"{x.Key}:{x.Value}")
-                );
+                decimal totalScore =atsConfig["Total Score"]?.Value<decimal>() ?? 0;
 
-                string statusOptions = string.Join(", ",
-                    resultStatusArray.Select(x => $"\"{x.Key}\"")
-                );
+                var breakDownArray =JsonConvert.DeserializeObject<List<RatingItem>>(
+                        atsConfig["BreakDownScore"]?.ToString() ?? "[]")
+                    ?? new List<RatingItem>();
 
-                string keywordHints = string.Join("; ",
+                var resultStatusArray =JsonConvert.DeserializeObject<List<ResultStatusItem>>(
+                        atsConfig["Result Status"]?.ToString() ?? "[]")
+                    ?? new List<ResultStatusItem>();
+
+                string resultRules = string.Join(
+                    Environment.NewLine,
+                    resultStatusArray.Select(x =>
+                        $"{x.Key}: {x.Value}"));
+
+                string statusOptions = string.Join(
+                    ", ",
+                    resultStatusArray.Select(x =>
+                        $"\"{x.Key}\""));
+
+                string keywordHints = string.Join(
+                    Environment.NewLine,
                     breakDownArray
                         .Where(x => x.Keywords != null && x.Keywords.Any())
-                        .Select(x => $"{x.Key}:{string.Join(",", x.Keywords)}")
-                );
+                        .Select(x =>
+                            $"{x.Key}: {string.Join(", ", x.Keywords)}"));
 
-                // Build scores schema (NO values prefilled)
-                string scoresSchema = string.Join(",\n    ",
+                string categoryScoreRules = string.Join(
+                    Environment.NewLine,
                     breakDownArray.Select(x =>
-                        $"\"{x.Key}\": {{ \"total\": {x.Value}, \"obtained\": number, \"id\": {x.Id}, \"notes\": string }}"
-                    )
-                );
+                        $"- {x.Key}: maximum score = {x.Value}"));
 
-                // -------- Core scoring instruction --------
+                string scoresSchema = string.Join(
+                    ",\n    ",
+                    breakDownArray.Select(x =>
+                        $"\"{x.Key}\": {{ " +
+                        $"\"total\": {x.Value}, " +
+                        $"\"obtained\": 0, " +
+                        $"\"id\": {x.Id}, " +
+                        $"\"notes\": \"\" " +
+                        $"}}"));
 
                 string scoringInstruction = $@"
-                    For each category, calculate an obtained score between 0 and the category’s total
-                    using ONLY explicit evidence found in the CandidateProfile JSON or Resume text.
+                        SCORING RULES
 
-                    Rules:
-                    - Do NOT infer or assume missing information.
-                    - obtained must be a number ≤ total.
-                    - If no explicit evidence exists, obtained = 0.
-                    - match_score MUST equal the sum of all obtained values.
-                    - percentage = (match_score / {totalScore}) × 100.
-                    ";
+                        1. Candidate evidence may ONLY come from:
+                           - Candidate Profile
+                           - Resume Text
 
-                                    // -------- Final prompt --------
+                        2. Job Description contains the job requirements only.
+                           Use it to compare against the candidate.
+                           NEVER treat Job Description content as candidate evidence.
 
-                                    string prompt = $@"
-                    You are an Applicant Tracking System (ATS) evaluator.
-                    Use ONLY the explicit data supplied below. Do NOT infer or assume anything.
+                        3. Review the COMPLETE Candidate Profile and Resume Text before scoring.
 
-                    Total Score: {totalScore}
-                    Result Rules: {resultRules}
-                    Keywords (internal use only): {keywordHints}
+                        4. Consider evidence from all available resume sections, including:
+                           - Summary
+                           - Skills
+                           - Experience
+                           - Projects
+                           - Education
+                           - Certifications
+                           - Responsibilities
+                           - Technical competencies
 
-                    CandidateProfile JSON:
-                    {JsonConvert.SerializeObject(jObj["CandidateProfile"], Formatting.None)}
+                        5. Do NOT infer or assume information that is not explicitly stated.
 
-                    JD:
-                    {jobText}
+                        6. Exact wording is NOT required when the meaning is clearly equivalent.
 
-                    Resume:
-                    {resumeText}
+                           For example:
+                           - A technology written with a version or framework variation may satisfy
+                             the same underlying required technology when technically equivalent.
+                           - RESTful API experience may support an API-related requirement.
+                           - Multi-tenant application experience may support a SaaS-related
+                             requirement when the resume explicitly describes it as SaaS or
+                             multi-tenant platform experience.
 
-                    {scoringInstruction}
+                        7. Keywords are hints for understanding the category.
+                           Do NOT award marks simply because a keyword appears.
 
-                    Return JSON ONLY in the exact structure below:
-                    {{
-                        ""match_score"": number,
-                        ""percentage"": number,
-                        ""remarks"": string,
-                        ""Status"": one of [{statusOptions}],
-                        ""scores"": {{
-                        {scoresSchema}
+                        8. Score each category based on how much explicit candidate evidence
+                           matches the requirements relevant to that category.
+
+                        9. If some requirements in a category match and others do not,
+                           award PARTIAL marks.
+
+                           Do NOT assign 0 to the entire category merely because one skill,
+                           tool, qualification or requirement is missing.
+
+                        10. Assign 0 only when there is NO explicit candidate evidence
+                            relevant to that category.
+
+                        SCORE CONSTRAINTS
+
+                        'obtained' means RAW MARKS, NOT percentage.
+
+                        Configured category maximum scores:
+
+                        {categoryScoreRules}
+
+                        For EVERY category:
+
+                        0 <= obtained <= category total
+
+                        The obtained score MUST NEVER exceed that category's configured total.
+
+                        Do NOT convert a percentage into obtained marks.
+
+                        Example principle:
+                        If a category is assessed as strongly matched, its obtained value
+                        must still remain within that category's configured maximum score.
+
+                        CALCULATION RULES
+
+                        1. match_score = sum of all category obtained scores.
+
+                        2. match_score MUST NOT exceed Total Score: {totalScore}
+
+                        3. percentage = (match_score / {totalScore}) * 100
+
+                        4. Round percentage to 2 decimal places.
+
+                        NOTES RULES
+
+                        1. Every category MUST include notes.
+
+                        2. Notes must mention the explicit candidate evidence used
+                           for that category.
+
+                        3. If some requirements matched and some were missing,
+                           mention both briefly.
+
+                        4. If obtained = 0, notes must be exactly:
+                           ""No explicit evidence found.""
+
+                        STATUS DECISION RULES
+
+                        Use the final calculated percentage and apply ONLY these rules:
+
+                        {resultRules}
+
+                        FINAL VALIDATION
+
+                        Before returning the JSON verify:
+
+                        1. Every obtained score is >= 0.
+                        2. Every obtained score is <= its category total.
+                        3. match_score equals the sum of all obtained scores.
+                        4. match_score does not exceed {totalScore}.
+                        5. percentage is calculated from match_score.
+                        6. Status follows the configured status rules.
+                        ";
+
+                                        string prompt = $@"
+                        You are an Applicant Tracking System (ATS) evaluator.
+
+                        Evaluate the candidate strictly from the supplied information.
+
+                        Do not invent candidate information.
+
+                        TOTAL SCORE
+                        -----------
+                        {totalScore}
+
+                        CATEGORY CONFIGURATION
+                        ----------------------
+                        {categoryScoreRules}
+
+                        KEYWORD HINTS
+                        -------------
+                        {keywordHints}
+
+                        CANDIDATE PROFILE
+                        -----------------
+                        {candidateProfile?.ToString(Formatting.Indented) ?? "Not available"}
+
+                        RESUME TEXT
+                        -----------
+                        {extractedResumeText}
+
+                        JOB DESCRIPTION
+                        ---------------
+                        {jobText}
+
+                        SCORING INSTRUCTIONS
+                        --------------------
+                        {scoringInstruction}
+
+                        Return JSON ONLY.
+
+                        Do not return markdown.
+                        Do not return explanations outside the JSON.
+
+                        Return exactly this structure:
+
+                        {{
+                            ""match_score"": 0,
+                            ""percentage"": 0,
+                            ""remarks"": """",
+                            ""Status"": one of [{statusOptions}],
+                            ""scores"": {{
+                                {scoresSchema}
+                            }}
                         }}
-                    }}
 
-                    temperature = 0.2
-                    ".Trim();
+                        Replace the placeholder values with the evaluated values.
+                        ".Trim();
 
                 result.Prompt = prompt;
                 result.TotalScore = totalScore;
@@ -548,6 +692,149 @@ namespace ATS.API.Controllers
                 return result;
             }
         }
+        //private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId, string jobText, string resumeText)
+        //{
+        //    var result = new AtsPromptResult();
+
+
+        //    try
+        //    {
+        //        string profileJson = string.Empty;
+
+        //        var parameters = new Dictionary<string, object>
+        //        {
+        //            { "@CandidateId", candidateId }
+        //        };
+
+        //        DataTable dt = await _dataService.GetDataAsync(
+        //            "SP_ATS_PROMT",
+        //            parameters,
+        //            _ConnectionString
+        //        );
+
+        //        if (dt.Rows.Count == 0 || dt.Rows[0]["AtsPrompt"] == DBNull.Value)
+        //        {
+        //            result.Prompt = JsonConvert.SerializeObject(
+        //                new { error = "No data returned from stored procedure." }
+        //            );
+        //            return result;
+        //        }
+
+        //        profileJson = dt.Rows[0]["AtsPrompt"].ToString();
+        //        var jObj = JObject.Parse(profileJson);
+        //        JObject resumeObj = JObject.Parse(resumeText);
+
+        //        string extractedResumeText =
+        //            resumeObj["ResumeText"]?.ToString() ?? "";
+
+        //        JToken candidateProfile =
+        //            jObj["CandidateProfile"] ??
+        //            resumeObj["CandidateProfile"];
+        //        decimal totalScore = jObj["Total Score"]?.Value<decimal>() ?? 100;
+
+        //        var breakDownArray = JsonConvert.DeserializeObject<List<RatingItem>>(
+        //            jObj["BreakDownScore"]?.ToString() ?? "[]"
+        //        );
+
+        //        var resultStatusArray = JsonConvert.DeserializeObject<List<ResultStatusItem>>(
+        //            jObj["Result Status"]?.ToString() ?? "[]"
+        //        );
+
+        //        // -------- Prompt helpers --------
+
+        //        string resultRules = string.Join(", ",
+        //            resultStatusArray.Select(x => $"{x.Key}:{x.Value}")
+        //        );
+
+        //        string statusOptions = string.Join(", ",
+        //            resultStatusArray.Select(x => $"\"{x.Key}\"")
+        //        );
+
+        //        string keywordHints = string.Join("; ",
+        //            breakDownArray
+        //                .Where(x => x.Keywords != null && x.Keywords.Any())
+        //                .Select(x => $"{x.Key}:{string.Join(",", x.Keywords)}")
+        //        );
+
+        //        // Build scores schema (NO values prefilled)
+        //        string scoresSchema = string.Join(",\n    ",
+        //            breakDownArray.Select(x =>
+        //                $"\"{x.Key}\": {{ \"total\": {x.Value}, \"obtained\": number, \"id\": {x.Id}, \"notes\": string }}"
+        //            )
+        //        );
+
+        //        // -------- Core scoring instruction --------
+
+        //        string scoringInstruction = $@"
+        //            SCORING RULES (apply per category):
+        //            1. Use ONLY explicit evidence found in the CandidateProfile JSON, JD, or Resume text below.
+        //            2. Do NOT infer, assume, or credit implied experience that isn't explicitly stated.
+        //            3. HARD CONSTRAINT: obtained must NEVER exceed that category's total. This is non-negotiable —
+        //               if the evidence seems very strong, the maximum you may award is exactly total, not more.
+        //            4. If no explicit evidence exists for a category, obtained = 0.
+        //            5. Before finalizing your answer, re-check every single category: confirm obtained <= total.
+        //               If you find any violation, correct it to equal total before returning the JSON.
+        //            6. match_score = the sum of all obtained values (not independently estimated).
+        //            7. percentage = (match_score / {totalScore}) * 100, rounded to 2 decimal places.
+
+        //            NOTES FIELD RULES:
+        //            - Each category's ""notes"" must cite the specific evidence used (quote or closely paraphrase
+        //              the resume line or JD requirement that justifies the obtained score).
+        //            - If obtained = 0, notes must state ""No explicit evidence found"" rather than being left vague.
+        //            - Do not use generic phrases like ""some alignment"" without pointing to what specifically aligned.
+
+        //            STATUS DECISION RULES (apply after computing percentage — do not guess, follow exactly):
+        //            {{statusDecisionRules}}
+        //            ";
+        //        // -------- Final prompt --------
+
+        //        string prompt = $@"
+        //           You are an Applicant Tracking System (ATS) evaluator. You must be strict, evidence-based,
+        //            and numerically precise. Do NOT infer or assume anything not explicitly present in the source text.
+
+        //            Total Score: {totalScore}
+        //            Result Rules: {resultRules}
+        //            Keywords (internal use only — context, not scoring shortcuts): {keywordHints}
+
+        //            Candidate Profile:
+        //            {candidateProfile?.ToString(Formatting.None)}
+
+        //            Resume Text:
+        //            {extractedResumeText}
+
+        //            Job Description:
+        //            {jobText}
+
+        //            {scoringInstruction}
+
+        //            Return JSON ONLY in the exact structure below:
+        //            {{
+        //                ""match_score"": number,
+        //                ""percentage"": number,
+        //                ""remarks"": string,
+        //                ""Status"": one of [{statusOptions}],
+        //                ""scores"": {{{scoresSchema}}}
+        //            }} 
+        //            ".Trim();
+
+        //        result.Prompt = prompt;
+        //        result.TotalScore = totalScore;
+        //        result.BreakDownArray = breakDownArray;
+        //        result.ResultStatusArray = resultStatusArray;
+
+        //        return result;
+        //    }
+        //    catch (Exception ex)
+        //    {
+        //        result.Prompt = JsonConvert.SerializeObject(new
+        //        {
+        //            error = "An error occurred while generating ATS prompt.",
+        //            details = ex.Message
+        //        });
+
+        //        return result;
+        //    }
+        //}
 
 
 
@@ -957,7 +1244,7 @@ namespace ATS.API.Controllers
             if (scoresToken == null)
                 throw new Exception("Invalid ATS response: scores missing.");
 
-            decimal obtainedScore = matchScore; // TRUST GPT TOTAL (single source of truth)
+            decimal obtainedScore = 0;
 
             // -------- Build Breakdown JSON (Total + Obtained) --------
             var enrichedBreakdown = new Dictionary<string, object>();
@@ -970,6 +1257,9 @@ namespace ATS.API.Controllers
                 decimal.TryParse(item.Value, out total);
 
                 decimal obtained = scoresToken[key]?["obtained"]?.Value<decimal>() ?? 0;
+                // Keep persisted ATS marks inside the configured category boundary.
+                obtained = ClampObtainedScore(obtained, total);
+                obtainedScore += obtained;
                 string notes = scoresToken[key]?["notes"]?.ToString() ?? "";
                 int id = scoresToken[key]?["id"]?.Value<int>() ?? item.Id;
 
@@ -985,6 +1275,11 @@ namespace ATS.API.Controllers
                     notes
                 };
             }
+
+            if (totalScoreFromPrompt > 0 && obtainedScore > totalScoreFromPrompt)
+                obtainedScore = totalScoreFromPrompt;
+
+            matchScore = Convert.ToInt32(Math.Round(obtainedScore, 0, MidpointRounding.AwayFromZero));
 
             string breakdownJson = JsonConvert.SerializeObject(enrichedBreakdown, Formatting.None);
             string detailsJson = JsonConvert.SerializeObject(detailsDict, Formatting.None);
@@ -1041,6 +1336,17 @@ namespace ATS.API.Controllers
             );
 
             return resumeScore;
+        }
+
+        private static decimal ClampObtainedScore(decimal obtained, decimal total)
+        {
+            if (obtained < 0)
+                return 0;
+
+            if (total > 0 && obtained > total)
+                return total;
+
+            return obtained;
         }
     }
 }

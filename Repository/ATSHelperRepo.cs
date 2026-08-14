@@ -1,4 +1,4 @@
-﻿using ATS.API.Interface;
+using ATS.API.Interface;
 using DocumentFormat.OpenXml.Packaging;
 using iTextSharp.text;
 using iTextSharp.text.pdf.parser;
@@ -93,12 +93,18 @@ namespace ATS.API.Repository
         }
 
 
+        private static readonly HttpClient _sharedHttpClient = new HttpClient(new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+            MaxConnectionsPerServer = 50
+        });
+
         public async Task<string> SendMessageAsync(string content, string gptApiUrl)
         { 
             try
             {
-                using var client = new HttpClient();
-                var response = await client.PostAsync(gptApiUrl,
+                var response = await _sharedHttpClient.PostAsync(gptApiUrl,
                     new StringContent(JsonConvert.SerializeObject(new { Content = content }), Encoding.UTF8, "application/json"));
 
                 if (!response.IsSuccessStatusCode)
@@ -114,7 +120,6 @@ namespace ATS.API.Repository
             {
                 return $"[Error sending message: {ex.Message}]";
             }
-
         }
 
         //public async Task<string> SendMessageGemini(string content)

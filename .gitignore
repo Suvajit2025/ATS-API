@@ -32,6 +32,7 @@ artifacts/
 ScaffoldingReadMe.txt
 appsettings.json
 appsettings.Development.json
+appsetting.json
 # NuGet Packages
 *.nupkg
 # NuGet Symbol Packages
