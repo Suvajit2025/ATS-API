@@ -51,6 +51,10 @@ namespace ATS.API.Models
     public class AtsPromptResult
     {
         public string Prompt { get; set; }
+        public string EvidenceSummary { get; set; }
+        public string JobText { get; set; }
+        public string CandidateJson { get; set; }
+        public string ResumeText { get; set; }
         public decimal TotalScore { get; set; }
         public List<RatingItem> BreakDownArray { get; set; }
         public List<ResultStatusItem> ResultStatusArray { get; set; }
@@ -79,6 +83,9 @@ namespace ATS.API.Models
         public int DepartmentID { get; set; }
         public int DEPARTMENT_ID { get; set; }
         public string DEPARTMENT_NAME { get; set; }
+        public int LocationID { get; set; }
+        public int LOCATION_ID { get; set; }
+        public string LOCATION_NAME { get; set; }
         public int PostID { get; set; }
         public string POST { get; set; }
     }

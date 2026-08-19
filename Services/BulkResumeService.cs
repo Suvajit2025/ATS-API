@@ -32,8 +32,16 @@ namespace ATS.API.Services
         private readonly string _openAiCandidateResumePrompt;
         private readonly string _candidateSignupUrl;
         private readonly MailSender _mailService;
+        private readonly FtpStorageService _ftpStorage;
+        private readonly string _ftpResumeFolder;
+        private readonly string _ftpProfilePicFolder;
 
-        public BulkResumeService(IDataService dataService, IATSHelper atsHelper, IConfiguration configuration, MailSender mailService)
+        public BulkResumeService(
+            IDataService dataService, 
+            IATSHelper atsHelper, 
+            IConfiguration configuration, 
+            MailSender mailService,
+            FtpStorageService ftpStorage)
         {
             _dataService = dataService;
             _helper = atsHelper;
@@ -49,6 +57,9 @@ namespace ATS.API.Services
             _candidateSignupUrl = configuration["BulkResumeSignup:RegisterCandidateUrl"]
                 ?? configuration["BulkResumeSignup:CreateNewUserSoapUrl"];
             _mailService = mailService;
+            _ftpStorage = ftpStorage;
+            _ftpResumeFolder = configuration["FtpSettings:ResumeRemotePath"] ?? "/Documents/Resume";
+            _ftpProfilePicFolder = configuration["FtpSettings:ProfilePicRemotePath"] ?? "/Documents/Profilepic";
         }
 
         public async Task<List<ATSJobDescription>> GetJobDescriptionsByPostIdAsync(int postId)
@@ -74,6 +85,13 @@ namespace ATS.API.Services
 
         public string GetUploadFolder()
         {
+            if (_ftpStorage.IsFtpEnabled)
+            {
+                string tempFolder = Path.Combine(Directory.GetCurrentDirectory(), "TempFiles", "Resumes");
+                if (!Directory.Exists(tempFolder)) Directory.CreateDirectory(tempFolder);
+                return tempFolder;
+            }
+
             string uploadFolder = GetConfiguredFolder(_bulkResumeSavePath);
             EnsureWritableFolder(uploadFolder, "ResumeSettings:BulkResumeSavePath");
             return uploadFolder;
@@ -81,6 +99,13 @@ namespace ATS.API.Services
 
         public string GetProfilePicFolder()
         {
+            if (_ftpStorage.IsFtpEnabled)
+            {
+                string tempFolder = Path.Combine(Directory.GetCurrentDirectory(), "TempFiles", "ProfilePics");
+                if (!Directory.Exists(tempFolder)) Directory.CreateDirectory(tempFolder);
+                return tempFolder;
+            }
+
             string profilePicFolder = GetConfiguredFolder(_bulkProfilePicSavePath);
             EnsureWritableFolder(profilePicFolder, "ResumeSettings:BulkProfilePicSavePath");
             return profilePicFolder;
@@ -102,6 +127,13 @@ namespace ATS.API.Services
             if (!savedFile.Exists || savedFile.Length == 0)
                 throw new IOException($"Resume file was not saved correctly at '{savedFilePath}'.");
 
+            // If FTP is enabled, upload copy to FTP server
+            if (_ftpStorage.IsFtpEnabled)
+            {
+                byte[] resumeBytes = await File.ReadAllBytesAsync(savedFilePath);
+                await _ftpStorage.UploadFileBytesAsync(_ftpResumeFolder, savedFileName, resumeBytes);
+            }
+
             return (savedFileName, savedFilePath);
         }
 
@@ -115,7 +147,7 @@ namespace ATS.API.Services
             return await _helper.SendMessageAsync(prompt, _gptApi);
         }
 
-        public async Task<long?> SaveBulkResumeAtsScoreAsync(int postId, int companyId, int departmentId, string originalCvName, string savedCvName, string fileHash, string candidateName, string mailId, string phoneNumber, int atsHeadRatingId, long? generatedCandidateId, string status, bool isShortlisted, JObject scoreJson, JObject candidateJson, bool isDuplicate, long? duplicateOfLogId, string imageFileLocation = "", string imageName = "", long candidateId = 0)
+        public async Task<long?> SaveBulkResumeAtsScoreAsync(int postId, int companyId, int departmentId, string originalCvName, string savedCvName, string fileHash, string candidateName, string mailId, string phoneNumber, int atsHeadRatingId, long? generatedCandidateId, string status, bool isShortlisted, JObject scoreJson, JObject candidateJson, bool isDuplicate, long? duplicateOfLogId, string imageFileLocation = "", string imageName = "", long candidateId = 0, int locationId = 0)
         {
             string resumeFileLocation = string.IsNullOrWhiteSpace(savedCvName)
                 ? string.Empty
@@ -125,8 +157,9 @@ namespace ATS.API.Services
             {
                 { "@BulkResumeAtsScoreLogID", candidateId > 0 ? (object)candidateId : DBNull.Value },
                 { "@POST_ID", postId },
-                { "@COMPANY_ID", companyId == 0 ? DBNull.Value : companyId },
-                { "@DEPARTMENT_ID", departmentId == 0 ? DBNull.Value : departmentId },
+                { "@COMPANY_ID", companyId },
+                { "@DEPARTMENT_ID", departmentId },
+                { "@LOCATION_ID", locationId },
                 { "@CV_NAME", originalCvName ?? string.Empty },
                 { "@SAVED_CV_NAME", savedCvName ?? string.Empty },
                 { "@RESUME_FILE_LOCATION", resumeFileLocation },
@@ -137,7 +170,7 @@ namespace ATS.API.Services
                 { "@MAIL_ID", mailId ?? string.Empty },
                 { "@PHONE_NUMBER", phoneNumber ?? string.Empty },
                 { "@ATS_HEAD_RATING_ID", atsHeadRatingId == 0 ? DBNull.Value : atsHeadRatingId },
-                { "@GENERATED_CANDIDATE_ID", generatedCandidateId.HasValue ? generatedCandidateId.Value : DBNull.Value },
+                { "@GENERATED_CANDIDATE_ID", generatedCandidateId.HasValue && generatedCandidateId.Value > 0 ? generatedCandidateId.Value : DBNull.Value },
                 { "@ATS_STATUS", status ?? string.Empty },
                 { "@IS_SHORTLISTED", isShortlisted },
                 { "@FULL_JSON", scoreJson?.ToString(Formatting.None) ?? string.Empty },
@@ -148,10 +181,40 @@ namespace ATS.API.Services
 
             DataTable dt = await _dataService.GetDataAsync("PRC_SAVE_BULK_RESUME_ATS_SCORE", parameters, _connectionString);
 
+            // Defensive ensure status update via dedicated stored procedure if updating existing record
+            if (candidateId > 0)
+            {
+                try
+                {
+                    await UpdateBulkResumeAtsStatusAsync(candidateId, status, isShortlisted, isDuplicate, duplicateOfLogId);
+                }
+                catch
+                {
+                    // Ignore fallback update errors if SP is still provisioning
+                }
+            }
+
             if (dt.Rows.Count == 0 || dt.Rows[0]["BulkResumeAtsScoreLogID"] == DBNull.Value)
-                return null;
+                return candidateId > 0 ? candidateId : null;
 
             return Convert.ToInt64(dt.Rows[0]["BulkResumeAtsScoreLogID"]);
+        }
+
+        public async Task<bool> UpdateBulkResumeAtsStatusAsync(long bulkResumeAtsScoreLogId, string status, bool isShortlisted, bool isDuplicate, long? duplicateOfLogId = null)
+        {
+            if (bulkResumeAtsScoreLogId <= 0) return false;
+
+            var parameters = new Dictionary<string, object>
+            {
+                { "@BulkResumeAtsScoreLogID", bulkResumeAtsScoreLogId },
+                { "@ATS_STATUS", status ?? string.Empty },
+                { "@IS_SHORTLISTED", isShortlisted },
+                { "@IS_DUPLICATE", isDuplicate },
+                { "@DUPLICATE_OF_LOG_ID", duplicateOfLogId.HasValue ? (object)duplicateOfLogId.Value : DBNull.Value }
+            };
+
+            DataTable dt = await _dataService.GetDataAsync("PRC_UPDATE_BULK_RESUME_ATS_STATUS", parameters, _connectionString);
+            return dt.Rows.Count > 0;
         }
 
         public async Task<string> SaveBulkProfilePicAsync(IFormFile? photo)
@@ -165,11 +228,21 @@ namespace ATS.API.Services
                 extension = ".jpg";
 
             string savedImageFileName = $"profile_{Guid.NewGuid():N}{extension}";
-            string savedImagePath = Path.Combine(GetProfilePicFolder(), savedImageFileName);
 
-            await using (var stream = new FileStream(savedImagePath, FileMode.Create))
+            if (_ftpStorage.IsFtpEnabled)
             {
-                await photo.CopyToAsync(stream);
+                using var ms = new MemoryStream();
+                await photo.CopyToAsync(ms);
+                await _ftpStorage.UploadFileBytesAsync(_ftpProfilePicFolder, savedImageFileName, ms.ToArray());
+            }
+            else
+            {
+                string savedImagePath = Path.Combine(GetProfilePicFolder(), savedImageFileName);
+
+                await using (var stream = new FileStream(savedImagePath, FileMode.Create))
+                {
+                    await photo.CopyToAsync(stream);
+                }
             }
 
             return BuildBulkProfilePicLocation(savedImageFileName);
@@ -209,9 +282,17 @@ namespace ATS.API.Services
                     return string.Empty;
 
                 string savedImageFileName = $"profile_{Guid.NewGuid():N}{extension}";
-                string savedImagePath = Path.Combine(GetProfilePicFolder(), savedImageFileName);
 
-                await File.WriteAllBytesAsync(savedImagePath, imageBytes);
+                if (_ftpStorage.IsFtpEnabled)
+                {
+                    await _ftpStorage.UploadFileBytesAsync(_ftpProfilePicFolder, savedImageFileName, imageBytes);
+                }
+                else
+                {
+                    string savedImagePath = Path.Combine(GetProfilePicFolder(), savedImageFileName);
+                    await File.WriteAllBytesAsync(savedImagePath, imageBytes);
+                }
+
                 return BuildBulkProfilePicLocation(savedImageFileName);
             }
             catch
@@ -229,7 +310,7 @@ namespace ATS.API.Services
                 { "@CANDIDATE_NAME", candidateName ?? string.Empty },
                 { "@MAIL_ID", mailId ?? string.Empty },
                 { "@PHONE_NUMBER", phoneNumber ?? string.Empty },
-                { "@CANDIDATE_ID", generatedCandidateId.HasValue ? generatedCandidateId.Value : DBNull.Value }
+                { "@CANDIDATE_ID", generatedCandidateId.HasValue && generatedCandidateId.Value > 0 ? generatedCandidateId.Value : DBNull.Value }
             };
 
             await _dataService.AddAsync("PRC_UPDATE_BULK_RESUME_ATS_SCORE", parameters, _connectionString);
@@ -254,11 +335,12 @@ namespace ATS.API.Services
             return ConvertFirstRowToJson(dt);
         }
 
-        public async Task<JObject> GetExistingBulkResumeByHashAsync(int postId, string fileHash)
+        public async Task<JObject> GetExistingBulkResumeByHashAsync(int postId, string fileHash, int locationId = 0)
         {
             var parameters = new Dictionary<string, object>
             {
                 { "@POST_ID", postId },
+                { "@LOCATION_ID", locationId > 0 ? locationId : DBNull.Value },
                 { "@FILE_HASH", fileHash }
             };
 
@@ -285,13 +367,14 @@ namespace ATS.API.Services
             return ConvertFirstRowToJson(dt);
         }
 
-        public async Task<List<Dictionary<string, object?>>> GetBulkResumeAtsReportAsync(int? companyId, int? departmentId, int? postId, string keyword, DateTime? fromDate, DateTime? toDate, int take)
+        public async Task<List<Dictionary<string, object?>>> GetBulkResumeAtsReportAsync(int? companyId, int? departmentId, int? postId, int? locationId, string keyword, DateTime? fromDate, DateTime? toDate, int take)
         {
             var parameters = new Dictionary<string, object>
             {
                 { "@COMPANY_ID", companyId.HasValue && companyId.Value > 0 ? companyId.Value : DBNull.Value },
                 { "@DEPARTMENT_ID", departmentId.HasValue && departmentId.Value > 0 ? departmentId.Value : DBNull.Value },
                 { "@POST_ID", postId.HasValue && postId.Value > 0 ? postId.Value : DBNull.Value },
+                { "@LOCATION_ID", locationId.HasValue && locationId.Value > 0 ? locationId.Value : DBNull.Value },
                 { "@KEYWORD", string.IsNullOrWhiteSpace(keyword) ? DBNull.Value : keyword.Trim() },
                 { "@FROM_DATE", fromDate.HasValue ? fromDate.Value : DBNull.Value },
                 { "@TO_DATE", toDate.HasValue ? toDate.Value : DBNull.Value },
@@ -310,7 +393,7 @@ namespace ATS.API.Services
 
         public async Task<List<Dictionary<string, object?>>> GetBulkResumeDepartmentListAsync()
         {
-            DataTable dt = await _dataService.GetDataAsync("Proc_GetDepartment", new Dictionary<string, object>(), _connectionString);
+            DataTable dt = await _dataService.GetDataAsync("PRC_Receruitment_DepartmentList", new Dictionary<string, object>(), _connectionString);
             return ConvertDataTableToDictionaryList(dt);
         }
 
@@ -333,7 +416,7 @@ namespace ATS.API.Services
                 { "@BulkResumeAtsScoreLogID", bulkResumeAtsScoreLogId },
                 { "@EXAM_OBTAINED_SCORE", examObtainedScore },
                 { "@EXAM_IS_SHORTLISTED", examIsShortlisted },
-                { "@GENERATED_CANDIDATE_ID", generatedCandidateId.HasValue ? generatedCandidateId.Value : DBNull.Value }
+                { "@GENERATED_CANDIDATE_ID", generatedCandidateId.HasValue && generatedCandidateId.Value > 0 ? generatedCandidateId.Value : DBNull.Value }
             };
 
             await _dataService.AddAsync("PRC_UPDATE_BULK_RESUME_EXAM_RESULT", parameters, _connectionString);
@@ -829,11 +912,13 @@ namespace ATS.API.Services
 
             EnrichResumeLocationFromText(resume, resumeText);
             await EnrichResumeLocationByPinCodeAsync(resume);
+            EnrichProfessionalExperience(resume, resumeText);
+            EnrichProjects(resume, resumeText);
 
             return resume;
         }
 
-        public async Task<JObject> RegisterBulkResumeCandidateManuallyAsync(long tempCandidateId, string manualReason = "")
+        public async Task<JObject> RegisterBulkResumeCandidateManuallyAsync(long tempCandidateId, string manualReason = "", int locationId = 0)
         {
             var result = new JObject
             {
@@ -868,6 +953,9 @@ namespace ATS.API.Services
             }
 
             int postId = tempCandidate["POST_ID"]?.Value<int>() ?? 0;
+            if (locationId <= 0)
+                locationId = tempCandidate["LOCATION_ID"]?.Value<int>() ?? 0;
+
             List<ATSJobDescription> jobs = postId > 0
                 ? await GetJobDescriptionsByPostIdAsync(postId)
                 : new List<ATSJobDescription>();
@@ -878,7 +966,7 @@ namespace ATS.API.Services
                 return result;
             }
 
-            ATSJobDescription jobDescription = jobs.First();
+            ATSJobDescription jobDescription = SelectJobDescriptionForLocation(jobs, locationId);
             string candidateJsonText = tempCandidate["CANDIDATE_JSON"]?.ToString();
             JObject candidateJson = TryParseJsonObject(candidateJsonText);
 
@@ -1035,13 +1123,15 @@ namespace ATS.API.Services
 
             try
             {
+                string postName = GetCleanPostName(jobDescription);
+
                 var payload = new
                 {
                     Username = username,
                     Email = email,
                     Password = password,
                     Company = jobDescription.COMPANY_NAME ?? string.Empty,
-                    Post = jobDescription.POST ?? string.Empty,
+                    Post = postName,
                     IDCompany = jobDescription.CompanyID,
                     IDPost = jobDescription.PostID
                 };
@@ -1090,6 +1180,61 @@ namespace ATS.API.Services
                 result["Message"] = $"RegisterCandidate call error: {ex.Message}";
                 return result;
             }
+        }
+
+        private static string GetCleanPostName(ATSJobDescription? jobDescription)
+        {
+            if (jobDescription == null)
+                return string.Empty;
+
+            string postName = FirstNonEmpty(
+                jobDescription.POST,
+                jobDescription.JobTitle
+            );
+
+            // Remove existing Department and Location if already present
+            postName = RemoveTrailingPostPart(postName, jobDescription.LOCATION_NAME);
+            postName = RemoveTrailingPostPart(postName, jobDescription.DEPARTMENT_NAME);
+
+            var parts = new List<string>();
+
+            if (!string.IsNullOrWhiteSpace(postName))
+                parts.Add(postName.Trim());
+
+            if (!string.IsNullOrWhiteSpace(jobDescription.DEPARTMENT_NAME))
+                parts.Add(jobDescription.DEPARTMENT_NAME.Trim());
+
+            if (!string.IsNullOrWhiteSpace(jobDescription.LOCATION_NAME))
+                parts.Add(jobDescription.LOCATION_NAME.Trim());
+
+            return string.Join(" - ", parts);
+        }
+
+        
+
+        private static ATSJobDescription SelectJobDescriptionForLocation(List<ATSJobDescription> jobs, int locationId)
+        {
+            if (jobs == null || jobs.Count == 0)
+                return new ATSJobDescription();
+
+            if (locationId <= 0)
+                return jobs.First();
+
+            return jobs.FirstOrDefault(job =>
+                    job.LocationID == locationId
+                    || job.LOCATION_ID == locationId)
+                ?? jobs.First();
+        }
+
+        private static string RemoveTrailingPostPart(string postName, string? trailingPart)
+        {
+            if (string.IsNullOrWhiteSpace(postName) || string.IsNullOrWhiteSpace(trailingPart))
+                return postName?.Trim() ?? string.Empty;
+
+            string suffix = " - " + trailingPart.Trim();
+            return postName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)
+                ? postName.Substring(0, postName.Length - suffix.Length).Trim()
+                : postName.Trim();
         }
 
         public async Task<(decimal TotalScore, List<RatingItem> BreakDownArray)> GetAtsRatingConfigAsync(int atsHeadRatingId)
@@ -1419,12 +1564,9 @@ namespace ATS.API.Services
 
         public bool IsAtsShortlisted(JObject scoreJson)
         {
-            string status = scoreJson["Status"]?.ToString();
-            bool recommended = scoreJson["RecommendedForATSShortlisting"]?.Value<bool?>() ?? false;
-
-            return recommended ||
-                   (!string.IsNullOrWhiteSpace(status) &&
-                    status.Equals("Shortlisted", StringComparison.OrdinalIgnoreCase));
+            string status = scoreJson?["Status"]?.ToString();
+            return !string.IsNullOrWhiteSpace(status) &&
+                   status.Equals("Shortlisted", StringComparison.OrdinalIgnoreCase);
         }
 
         private void EnrichResumeLocationFromText(JObject resume, string resumeText)
@@ -1491,6 +1633,109 @@ namespace ATS.API.Services
                 resume["District"] = "";
                 resume["State"] = "";
                 resume["Country"] = "";
+            }
+        }
+
+        private void EnrichProfessionalExperience(JObject resume, string resumeText)
+        {
+            if (resume == null) return;
+
+            string exp = resume["ProfessionalExperience"]?.ToString()
+                         ?? resume["ProfessionalExp"]?.ToString()
+                         ?? resume["TotalExperience"]?.ToString()
+                         ?? resume["Experience"]?.ToString()
+                         ?? string.Empty;
+
+            if (!string.IsNullOrWhiteSpace(exp) && exp != "-")
+            {
+                resume["ProfessionalExperience"] = exp;
+                return;
+            }
+
+            // 1. Try regex pattern match from resumeText
+            if (!string.IsNullOrWhiteSpace(resumeText))
+            {
+                Match match = Regex.Match(
+                    resumeText,
+                    @"\b(?<exp>\d+(?:\.\d+)?\+?\s*(?:years?|yrs?|months?))\s*(?:of)?\s*(?:relevant|professional|total|work|IT)?\s*experience\b",
+                    RegexOptions.IgnoreCase);
+
+                if (match.Success)
+                {
+                    resume["ProfessionalExperience"] = match.Groups["exp"].Value.Trim();
+                    return;
+                }
+
+                Match match2 = Regex.Match(
+                    resumeText,
+                    @"(?:Total|Professional|Work)\s*Experience\s*[:\-\s]\s*(?<exp>\d+(?:\.\d+)?\+?\s*(?:years?|yrs?|months?))",
+                    RegexOptions.IgnoreCase);
+
+                if (match2.Success)
+                {
+                    resume["ProfessionalExperience"] = match2.Groups["exp"].Value.Trim();
+                    return;
+                }
+            }
+
+            // 2. Try inferring from CompanyDetails if present
+            if (resume["CompanyDetails"] is JArray companyArray && companyArray.Count > 0)
+            {
+                resume["ProfessionalExperience"] = $"{companyArray.Count} Role(s) Listed";
+            }
+        }
+
+        private void EnrichProjects(JObject resume, string resumeText)
+        {
+            if (resume == null) return;
+
+            JArray? anyProject = resume["AnyProject"] as JArray;
+            bool hasValidProjects = anyProject != null && anyProject.Any(p => !string.IsNullOrWhiteSpace(p?.ToString()));
+
+            if (hasValidProjects)
+            {
+                var cleaned = new JArray(anyProject!.Where(p => !string.IsNullOrWhiteSpace(p?.ToString())));
+                if (cleaned.Count > 0)
+                {
+                    resume["AnyProject"] = cleaned;
+                    return;
+                }
+            }
+
+            var projectsList = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // 1. Harvest project references from CompanyDetails responsibilities
+            if (resume["CompanyDetails"] is JArray companyList)
+            {
+                foreach (var company in companyList)
+                {
+                    if (company["Responsibilities"] is JArray respArray)
+                    {
+                        foreach (var resp in respArray)
+                        {
+                            string text = resp?.ToString()?.Trim() ?? string.Empty;
+                            if (string.IsNullOrWhiteSpace(text)) continue;
+
+                            if (text.Contains("system", StringComparison.OrdinalIgnoreCase) ||
+                                text.Contains("application", StringComparison.OrdinalIgnoreCase) ||
+                                text.Contains("ATS", StringComparison.OrdinalIgnoreCase) ||
+                                text.Contains("ERP", StringComparison.OrdinalIgnoreCase) ||
+                                text.Contains("platform", StringComparison.OrdinalIgnoreCase) ||
+                                text.Contains("portal", StringComparison.OrdinalIgnoreCase) ||
+                                text.Contains("module", StringComparison.OrdinalIgnoreCase) ||
+                                text.Contains("project", StringComparison.OrdinalIgnoreCase) ||
+                                text.Contains("workflow", StringComparison.OrdinalIgnoreCase))
+                            {
+                                projectsList.Add(text);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (projectsList.Count > 0)
+            {
+                resume["AnyProject"] = new JArray(projectsList);
             }
         }
 

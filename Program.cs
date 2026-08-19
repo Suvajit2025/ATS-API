@@ -11,10 +11,9 @@ using Microsoft.EntityFrameworkCore;
  
 var builder = WebApplication.CreateBuilder(args);
 
-// Explicitly load configuration from appsetting.json & appsettings.json
+// Explicitly load configuration from appsettings.json
 builder.Configuration
     .SetBasePath(Directory.GetCurrentDirectory())
-    .AddJsonFile("appsetting.json", optional: true, reloadOnChange: true)
     .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables();
  // ------------------------
@@ -85,6 +84,11 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
 // Repository
 builder.Services.AddScoped<IETimeTrackRepository, ETimeTrackRepository>();
 builder.Services.AddScoped<MailService>();
+
+// File Migration Service, FTP Storage & Background Job (every 30 mins)
+builder.Services.AddScoped<FtpStorageService>();
+builder.Services.AddScoped<FileMigrationService>();
+builder.Services.AddHostedService<FileMigrationBackgroundService>();
 
 // Hosted Services
 //builder.Services.AddHostedService<ETimeTrackCollectorService>();

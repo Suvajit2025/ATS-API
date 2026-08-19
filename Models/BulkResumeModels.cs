@@ -8,15 +8,14 @@ namespace ATS.API.Models
         public int PostId { get; set; }
         public int CompanyId { get; set; }
         public int DepartmentId { get; set; }
+        public int LocationId { get; set; }
 
         public string CandidateName { get; set; } = string.Empty;
         public string MailId { get; set; } = string.Empty;
         public string PhoneNumber { get; set; } = string.Empty;
 
         public IFormFile? Image { get; set; }
-        public IFormFile? CV { get; set; }
-        public IFormFile? PhotoFile { get; set; }
-        public IFormFile? CVFile { get; set; }
+        public IFormFile? CV { get; set; } 
 
         public string ImageName { get; set; } = string.Empty;
         public string OriginalCvName { get; set; } = string.Empty;
@@ -39,6 +38,7 @@ namespace ATS.API.Models
     public class BulkResumeManualExamLinkRequest
     {
         public long TempCandidateId { get; set; }
+        public int LocationId { get; set; } 
         public string ManualReason { get; set; } = string.Empty;
     }
 

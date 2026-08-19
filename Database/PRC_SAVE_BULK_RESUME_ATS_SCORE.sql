@@ -1,240 +1,74 @@
+USE [Recruitment]
+GO
+
+/****** Object:  Table [dbo].[BulkResumeAtsScoreLog]    Script Date: 16-08-2026 11:27:48 ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
 IF OBJECT_ID('dbo.BulkResumeAtsScoreLog', 'U') IS NULL
 BEGIN
-    CREATE TABLE dbo.BulkResumeAtsScoreLog
-    (
-        BulkResumeAtsScoreLogID BIGINT IDENTITY(1,1) NOT NULL
-            CONSTRAINT PK_BulkResumeAtsScoreLog PRIMARY KEY,
-        POST_ID INT NOT NULL,
-        CV_NAME NVARCHAR(500) NULL,
-        SAVED_CV_NAME NVARCHAR(500) NULL,
-        RESUME_FILE_LOCATION NVARCHAR(1000) NULL,
-        IMAGE_FILE_LOCATION NVARCHAR(1000) NULL,
-        ImageName NVARCHAR(500) NULL,
-        FILE_HASH VARCHAR(64) NULL,
-        CANDIDATE_NAME NVARCHAR(500) NULL,
-        MAIL_ID NVARCHAR(500) NULL,
-        PHONE_NUMBER NVARCHAR(50) NULL,
-        COMPANY_ID INT NULL,
-        DEPARTMENT_ID INT NULL,
-        ATS_HEAD_RATING_ID INT NULL,
-        GENERATED_CANDIDATE_ID BIGINT NULL,
-        EXAM_OBTAINED_SCORE DECIMAL(18,2) NULL,
-        EXAM_IS_SHORTLISTED BIT NULL,
-        EXAM_RESULT_DATE DATETIME NULL,
-        ATS_STATUS NVARCHAR(100) NULL,
-        IS_SHORTLISTED BIT NOT NULL
-            CONSTRAINT DF_BulkResumeAtsScoreLog_IS_SHORTLISTED DEFAULT (0),
-        IS_DUPLICATE BIT NOT NULL
-            CONSTRAINT DF_BulkResumeAtsScoreLog_IS_DUPLICATE DEFAULT (0),
-        DUPLICATE_OF_LOG_ID BIGINT NULL,
-        FULL_JSON NVARCHAR(MAX) NULL,
-        CANDIDATE_JSON NVARCHAR(MAX) NULL,
-        CREATED_DATE DATETIME NOT NULL
-            CONSTRAINT DF_BulkResumeAtsScoreLog_CREATED_DATE DEFAULT (GETDATE())
-    );
+CREATE TABLE [dbo].[BulkResumeAtsScoreLog](
+	[BulkResumeAtsScoreLogID] [bigint] IDENTITY(1,1) NOT NULL,
+	[POST_ID] [int] NOT NULL,
+	[COMPANY_ID] [int] NOT NULL,
+	[DEPARTMENT_ID] [int] NOT NULL,
+	[LOCATION_ID] [int] NOT NULL,
+	[CV_NAME] [nvarchar](500) NULL,
+	[SAVED_CV_NAME] [nvarchar](500) NULL,
+	[FILE_HASH] [varchar](64) NULL,
+	[RESUME_FILE_LOCATION] [nvarchar](1000) NULL,
+	[IMAGENAME] [nvarchar](500) NULL,
+	[IMAGE_FILE_LOCATION] [nvarchar](1000) NULL,
+	[CANDIDATE_NAME] [nvarchar](500) NULL,
+	[MAIL_ID] [nvarchar](500) NULL,
+	[PHONE_NUMBER] [nvarchar](50) NULL,
+	[ATS_HEAD_RATING_ID] [int] NULL,
+	[GENERATED_CANDIDATE_ID] [bigint] NULL,
+	[EXAM_OBTAINED_SCORE] [decimal](18, 2) NULL,
+	[EXAM_IS_SHORTLISTED] [bit] NULL,
+	[EXAM_RESULT_DATE] [datetime] NULL,
+	[ATS_STATUS] [nvarchar](100) NULL,
+	[IS_SHORTLISTED] [bit] NOT NULL,
+	[IS_DUPLICATE] [bit] NOT NULL,
+	[DUPLICATE_OF_LOG_ID] [bigint] NULL,
+	[FULL_JSON] [nvarchar](max) NULL,
+	[CANDIDATE_JSON] [nvarchar](max) NULL,
+	[CREATED_DATE] [datetime] NOT NULL,
+ CONSTRAINT [PK_BulkResumeAtsScoreLog] PRIMARY KEY CLUSTERED 
+(
+	[BulkResumeAtsScoreLogID] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
+) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
 END
 GO
 
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'POST_ID') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD POST_ID INT NULL;
-END
+IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'LOCATION_ID') IS NULL
+    ALTER TABLE [dbo].[BulkResumeAtsScoreLog]
+    ADD [LOCATION_ID] [int] NOT NULL
+        CONSTRAINT [DF_BulkResumeAtsScoreLog_LOCATION_ID] DEFAULT ((0)) WITH VALUES
 GO
 
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'CV_NAME') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD CV_NAME NVARCHAR(500) NULL;
-END
+IF OBJECT_ID('dbo.DF_BulkResumeAtsScoreLog_IS_SHORTLISTED', 'D') IS NULL
+    ALTER TABLE [dbo].[BulkResumeAtsScoreLog] ADD  CONSTRAINT [DF_BulkResumeAtsScoreLog_IS_SHORTLISTED]  DEFAULT ((0)) FOR [IS_SHORTLISTED]
 GO
 
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'SAVED_CV_NAME') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD SAVED_CV_NAME NVARCHAR(500) NULL;
-END
+IF OBJECT_ID('dbo.DF_BulkResumeAtsScoreLog_IS_DUPLICATE', 'D') IS NULL
+    ALTER TABLE [dbo].[BulkResumeAtsScoreLog] ADD  CONSTRAINT [DF_BulkResumeAtsScoreLog_IS_DUPLICATE]  DEFAULT ((0)) FOR [IS_DUPLICATE]
 GO
 
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'RESUME_FILE_LOCATION') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD RESUME_FILE_LOCATION NVARCHAR(1000) NULL;
-END
+IF OBJECT_ID('dbo.DF_BulkResumeAtsScoreLog_CREATED_DATE', 'D') IS NULL
+    ALTER TABLE [dbo].[BulkResumeAtsScoreLog] ADD  CONSTRAINT [DF_BulkResumeAtsScoreLog_CREATED_DATE]  DEFAULT (getdate()) FOR [CREATED_DATE]
 GO
 
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'IMAGE_FILE_LOCATION') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD IMAGE_FILE_LOCATION NVARCHAR(1000) NULL;
-END
-GO
 
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'ImageName') IS NULL AND COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'IMAGE_NAME') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD ImageName NVARCHAR(500) NULL;
-END
-GO
 
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'FILE_HASH') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD FILE_HASH VARCHAR(64) NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'CANDIDATE_NAME') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD CANDIDATE_NAME NVARCHAR(500) NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'MAIL_ID') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD MAIL_ID NVARCHAR(500) NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'PHONE_NUMBER') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD PHONE_NUMBER NVARCHAR(50) NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'COMPANY_ID') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD COMPANY_ID INT NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'DEPARTMENT_ID') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD DEPARTMENT_ID INT NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'GENERATED_CANDIDATE_ID') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD GENERATED_CANDIDATE_ID BIGINT NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'ATS_HEAD_RATING_ID') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD ATS_HEAD_RATING_ID INT NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'EXAM_OBTAINED_SCORE') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD EXAM_OBTAINED_SCORE DECIMAL(18,2) NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'EXAM_IS_SHORTLISTED') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD EXAM_IS_SHORTLISTED BIT NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'EXAM_RESULT_DATE') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD EXAM_RESULT_DATE DATETIME NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'ATS_STATUS') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD ATS_STATUS NVARCHAR(100) NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'IS_SHORTLISTED') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD IS_SHORTLISTED BIT NOT NULL
-        CONSTRAINT DF_BulkResumeAtsScoreLog_IS_SHORTLISTED DEFAULT (0);
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'IS_DUPLICATE') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD IS_DUPLICATE BIT NOT NULL
-        CONSTRAINT DF_BulkResumeAtsScoreLog_IS_DUPLICATE DEFAULT (0);
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'DUPLICATE_OF_LOG_ID') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD DUPLICATE_OF_LOG_ID BIGINT NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'FULL_JSON') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD FULL_JSON NVARCHAR(MAX) NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'CANDIDATE_JSON') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD CANDIDATE_JSON NVARCHAR(MAX) NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'CREATED_DATE') IS NULL
-BEGIN
-    ALTER TABLE dbo.BulkResumeAtsScoreLog
-    ADD CREATED_DATE DATETIME NOT NULL
-        CONSTRAINT DF_BulkResumeAtsScoreLog_CREATED_DATE DEFAULT (GETDATE());
-END
-GO
-
-IF NOT EXISTS (
-    SELECT 1
-    FROM sys.indexes
-    WHERE name = 'IX_BulkResumeAtsScoreLog_Post_FileHash'
-      AND object_id = OBJECT_ID('dbo.BulkResumeAtsScoreLog')
-)
-BEGIN
-    CREATE INDEX IX_BulkResumeAtsScoreLog_Post_FileHash
-    ON dbo.BulkResumeAtsScoreLog (POST_ID, FILE_HASH)
-    WHERE FILE_HASH IS NOT NULL AND IS_DUPLICATE = 0;
-END
-GO
-
-IF COL_LENGTH('dbo.HEAD_ATS_SCORE', 'ExamMarks') IS NULL
-BEGIN
-    ALTER TABLE dbo.HEAD_ATS_SCORE
-    ADD ExamMarks DECIMAL(18,2) NULL;
-END
-GO
-
-IF COL_LENGTH('dbo.HEAD_ATS_SCORE', 'ExamStatus') IS NULL
-BEGIN
-    ALTER TABLE dbo.HEAD_ATS_SCORE
-    ADD ExamStatus NVARCHAR(50) NULL;
-END
-GO
 
 CREATE OR ALTER PROCEDURE dbo.PRC_GET_BULK_RESUME_ATS_BY_HASH
     @POST_ID INT,
+    @LOCATION_ID INT = NULL,
     @FILE_HASH VARCHAR(64)
 AS
 BEGIN
@@ -254,6 +88,7 @@ BEGIN
         PHONE_NUMBER,
         COMPANY_ID,
         DEPARTMENT_ID,
+        LOCATION_ID,
         ATS_HEAD_RATING_ID,
         GENERATED_CANDIDATE_ID,
         EXAM_OBTAINED_SCORE,
@@ -268,6 +103,7 @@ BEGIN
         CREATED_DATE
     FROM dbo.BulkResumeAtsScoreLog
     WHERE POST_ID = @POST_ID
+      AND (@LOCATION_ID IS NULL OR @LOCATION_ID = 0 OR LOCATION_ID = @LOCATION_ID)
       AND FILE_HASH = @FILE_HASH
       AND IS_DUPLICATE = 0
     ORDER BY BulkResumeAtsScoreLogID DESC;
@@ -367,6 +203,7 @@ CREATE OR ALTER PROCEDURE dbo.PRC_SAVE_BULK_RESUME_ATS_SCORE
     @PHONE_NUMBER NVARCHAR(50) = NULL,
     @COMPANY_ID INT = NULL,
     @DEPARTMENT_ID INT = NULL,
+    @LOCATION_ID INT = NULL,
     @ATS_HEAD_RATING_ID INT = NULL,
     @GENERATED_CANDIDATE_ID BIGINT = NULL,
     @ATS_STATUS NVARCHAR(100) = NULL,
@@ -378,6 +215,8 @@ CREATE OR ALTER PROCEDURE dbo.PRC_SAVE_BULK_RESUME_ATS_SCORE
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    IF @GENERATED_CANDIDATE_ID = 0 SET @GENERATED_CANDIDATE_ID = NULL;
 
     -- If BulkResumeAtsScoreLogID is passed and > 0, update existing record
     IF (@BulkResumeAtsScoreLogID IS NOT NULL AND @BulkResumeAtsScoreLogID > 0 AND EXISTS (SELECT 1 FROM dbo.BulkResumeAtsScoreLog WHERE BulkResumeAtsScoreLogID = @BulkResumeAtsScoreLogID))
@@ -396,9 +235,13 @@ BEGIN
             PHONE_NUMBER = COALESCE(NULLIF(LTRIM(RTRIM(@PHONE_NUMBER)), ''), PHONE_NUMBER),
             COMPANY_ID = COALESCE(@COMPANY_ID, COMPANY_ID),
             DEPARTMENT_ID = COALESCE(@DEPARTMENT_ID, DEPARTMENT_ID),
+            LOCATION_ID = COALESCE(@LOCATION_ID, LOCATION_ID),
             ATS_HEAD_RATING_ID = COALESCE(@ATS_HEAD_RATING_ID, ATS_HEAD_RATING_ID),
-            GENERATED_CANDIDATE_ID = COALESCE(@GENERATED_CANDIDATE_ID, GENERATED_CANDIDATE_ID),
+            GENERATED_CANDIDATE_ID = NULLIF(COALESCE(@GENERATED_CANDIDATE_ID, GENERATED_CANDIDATE_ID), 0),
             ATS_STATUS = COALESCE(NULLIF(LTRIM(RTRIM(@ATS_STATUS)), ''), ATS_STATUS),
+            IS_SHORTLISTED = COALESCE(@IS_SHORTLISTED, IS_SHORTLISTED),
+            IS_DUPLICATE = COALESCE(@IS_DUPLICATE, IS_DUPLICATE),
+            DUPLICATE_OF_LOG_ID = @DUPLICATE_OF_LOG_ID,
             FULL_JSON = COALESCE(NULLIF(LTRIM(RTRIM(@FULL_JSON)), ''), FULL_JSON),
             CANDIDATE_JSON = COALESCE(NULLIF(LTRIM(RTRIM(@CANDIDATE_JSON)), ''), CANDIDATE_JSON)
         WHERE BulkResumeAtsScoreLogID = @BulkResumeAtsScoreLogID;
@@ -420,6 +263,7 @@ BEGIN
             SELECT TOP 1 @ExistingLogID = BulkResumeAtsScoreLogID
             FROM dbo.BulkResumeAtsScoreLog WITH (UPDLOCK, HOLDLOCK)
             WHERE POST_ID = @POST_ID
+              AND (ISNULL(@LOCATION_ID, 0) = 0 OR LOCATION_ID = @LOCATION_ID)
               AND FILE_HASH = LTRIM(RTRIM(@FILE_HASH))
               AND IS_DUPLICATE = 0
             ORDER BY BulkResumeAtsScoreLogID ASC;
@@ -431,6 +275,7 @@ BEGIN
             SELECT TOP 1 @ExistingLogID = BulkResumeAtsScoreLogID
             FROM dbo.BulkResumeAtsScoreLog WITH (UPDLOCK, HOLDLOCK)
             WHERE POST_ID = @POST_ID
+              AND (ISNULL(@LOCATION_ID, 0) = 0 OR LOCATION_ID = @LOCATION_ID)
               AND LTRIM(RTRIM(MAIL_ID)) = LTRIM(RTRIM(@MAIL_ID))
               AND IS_DUPLICATE = 0
             ORDER BY BulkResumeAtsScoreLogID ASC;
@@ -461,6 +306,7 @@ BEGIN
         PHONE_NUMBER,
         COMPANY_ID,
         DEPARTMENT_ID,
+        LOCATION_ID,
         ATS_HEAD_RATING_ID,
         GENERATED_CANDIDATE_ID,
         ATS_STATUS,
@@ -485,6 +331,7 @@ BEGIN
         @PHONE_NUMBER,
         @COMPANY_ID,
         @DEPARTMENT_ID,
+        ISNULL(@LOCATION_ID, 0),
         @ATS_HEAD_RATING_ID,
         @GENERATED_CANDIDATE_ID,
         @ATS_STATUS,
@@ -520,6 +367,7 @@ BEGIN
         PHONE_NUMBER,
         COMPANY_ID,
         DEPARTMENT_ID,
+        LOCATION_ID,
         ATS_HEAD_RATING_ID,
         GENERATED_CANDIDATE_ID,
         ATS_STATUS,
@@ -548,12 +396,14 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    IF @CANDIDATE_ID = 0 SET @CANDIDATE_ID = NULL;
+
     UPDATE dbo.BulkResumeAtsScoreLog
     SET
         CANDIDATE_NAME = COALESCE(NULLIF(LTRIM(RTRIM(@CANDIDATE_NAME)), ''), CANDIDATE_NAME),
         MAIL_ID = COALESCE(NULLIF(LTRIM(RTRIM(@MAIL_ID)), ''), MAIL_ID),
         PHONE_NUMBER = COALESCE(NULLIF(LTRIM(RTRIM(@PHONE_NUMBER)), ''), PHONE_NUMBER),
-        GENERATED_CANDIDATE_ID = COALESCE(@CANDIDATE_ID, GENERATED_CANDIDATE_ID)
+        GENERATED_CANDIDATE_ID = NULLIF(COALESCE(@CANDIDATE_ID, GENERATED_CANDIDATE_ID), 0)
     WHERE POST_ID = @POST_ID
       AND FILE_HASH = @FILE_HASH
       AND IS_DUPLICATE = 0;
@@ -569,12 +419,14 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
+    IF @GENERATED_CANDIDATE_ID = 0 SET @GENERATED_CANDIDATE_ID = NULL;
+
     UPDATE dbo.BulkResumeAtsScoreLog
     SET
         EXAM_OBTAINED_SCORE = @EXAM_OBTAINED_SCORE,
         EXAM_IS_SHORTLISTED = @EXAM_IS_SHORTLISTED,
         EXAM_RESULT_DATE = GETDATE(),
-        GENERATED_CANDIDATE_ID = COALESCE(@GENERATED_CANDIDATE_ID, GENERATED_CANDIDATE_ID)
+        GENERATED_CANDIDATE_ID = NULLIF(COALESCE(@GENERATED_CANDIDATE_ID, GENERATED_CANDIDATE_ID), 0)
     WHERE BulkResumeAtsScoreLogID = @BulkResumeAtsScoreLogID;
 END
 GO
@@ -583,6 +435,7 @@ CREATE OR ALTER PROCEDURE dbo.PRC_GET_BULK_RESUME_ATS_REPORT
     @COMPANY_ID INT = NULL,
     @DEPARTMENT_ID INT = NULL,
     @POST_ID INT = NULL,
+    @LOCATION_ID INT = NULL,
     @KEYWORD NVARCHAR(500) = NULL,
     @FROM_DATE DATETIME = NULL,
     @TO_DATE DATETIME = NULL,
@@ -597,6 +450,7 @@ BEGIN
     IF @COMPANY_ID = 0 SET @COMPANY_ID = NULL;
     IF @DEPARTMENT_ID = 0 SET @DEPARTMENT_ID = NULL;
     IF @POST_ID = 0 SET @POST_ID = NULL;
+    IF @LOCATION_ID = 0 SET @LOCATION_ID = NULL;
     IF LTRIM(RTRIM(@KEYWORD)) = '' SET @KEYWORD = NULL;
 
     SELECT TOP (@TAKE)
@@ -616,6 +470,7 @@ BEGIN
         C.Company AS COMPANY_NAME,
         C.Company AS COMPANY,
         L.DEPARTMENT_ID,
+        L.LOCATION_ID,
         L.POST_ID AS JD_POST_ID,
         P.postname AS POST_NAME,
         P.postname AS POST,
@@ -668,6 +523,7 @@ BEGIN
         )
         AND
         (@POST_ID IS NULL OR @POST_ID = 0 OR L.POST_ID = @POST_ID)
+        AND (@LOCATION_ID IS NULL OR @LOCATION_ID = 0 OR L.LOCATION_ID = @LOCATION_ID)
         AND (
             NULLIF(LTRIM(RTRIM(@KEYWORD)), '') IS NULL
             OR L.CANDIDATE_NAME LIKE '%' + @KEYWORD + '%'
@@ -825,34 +681,41 @@ BEGIN
 END
 GO
 
-CREATE OR ALTER PROCEDURE dbo.PRC_Receruitment_Post
-    @CompanyID INT = NULL,
-    @DepartmentID INT = NULL
-AS
-BEGIN
-    SET NOCOUNT ON;
-
-    IF @CompanyID = 0 SET @CompanyID = NULL;
-    IF @DepartmentID = 0 SET @DepartmentID = NULL;
-
-    SELECT
-        ActualPostID,
-        LTRIM(RTRIM(postname)) AS PostName,
-        IDCompany AS CompanyID,
-        Deptid AS DepartmentID
-    FROM dbo.trecruitappliedpost
-    WHERE
-        IDCompany IS NOT NULL
-        AND Deptid IS NOT NULL
-        AND (@CompanyID IS NULL OR IDCompany = @CompanyID)
-        AND (@DepartmentID IS NULL OR Deptid = @DepartmentID)
-    GROUP BY
-        ActualPostID,
+     
+CREATE OR ALTER   PROCEDURE dbo.PRC_Receruitment_PostList     
+    @CompanyID INT = NULL,    
+    @DepartmentID INT = NULL    
+AS    
+BEGIN    
+    SET NOCOUNT ON;    
+    
+    IF @CompanyID = 0 SET @CompanyID = NULL;    
+    IF @DepartmentID = 0 SET @DepartmentID = NULL;    
+    
+    SELECT    
+        TD.PostID,    
+        LTRIM(RTRIM(postname))+'-'+LTRIM(RTRIM(Location)) AS PostName,    
+        IDCompany AS CompanyID,    
+        Deptid AS DepartmentID,
+        LC.locid AS LocationID   
+    FROM trecruitappliedpost TD 
+    INNER JOIN trecruitpostlocationmap LCM ON LCM.PostID=TD.postid 
+    INNER JOIN trecruitpostlocation LC ON LC.locid=LCM.locid
+    WHERE    
+        IDCompany IS NOT NULL    
+        AND Deptid IS NOT NULL    
+        AND (@CompanyID IS NULL OR IDCompany = @CompanyID)    
+        AND (@DepartmentID IS NULL OR Deptid = @DepartmentID)    
+        AND LCM.Activeflag='Y'    
+    GROUP BY    
+        TD.postid,    
         LTRIM(RTRIM(postname)),
-        IDCompany,
-        Deptid
-    ORDER BY PostName ASC;
-END
+        LTRIM(RTRIM(Location)),
+        IDCompany,    
+        Deptid,
+        LC.locid    
+    ORDER BY PostName ASC;    
+END 
 GO
 
 CREATE OR ALTER PROCEDURE dbo.PRC_Receruitment_Company_List
@@ -867,3 +730,42 @@ BEGIN
     WHERE A.ActiveYN = 1;
 END
 GO
+
+CREATE OR ALTER Proc PRC_Receruitment_DepartmentList            
+As            
+Begin            
+     
+WITH CTE AS (      
+   SELECT ID, DeptName,  ROW_NUMBER() OVER (PARTITION BY  DeptName  ORDER BY (SELECT 0)) AS rn      
+   FROM  [trecruitdepartment] WHERE ActiveFlag='Y'         
+       
+)      
+SELECT ID, DeptName       
+FROM CTE      
+WHERE rn = 1  and Deptname not in ('') And Deptname not like'%DEMO%'     
+ORDER BY Deptname         
+End       
+GO
+
+CREATE OR ALTER PROCEDURE dbo.PRC_UPDATE_BULK_RESUME_ATS_STATUS
+    @BulkResumeAtsScoreLogID BIGINT,
+    @ATS_STATUS NVARCHAR(100) = NULL,
+    @IS_SHORTLISTED BIT = 0,
+    @IS_DUPLICATE BIT = 0,
+    @DUPLICATE_OF_LOG_ID BIGINT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    UPDATE dbo.BulkResumeAtsScoreLog
+    SET
+        ATS_STATUS = COALESCE(NULLIF(LTRIM(RTRIM(@ATS_STATUS)), ''), ATS_STATUS),
+        IS_SHORTLISTED = @IS_SHORTLISTED,
+        IS_DUPLICATE = @IS_DUPLICATE,
+        DUPLICATE_OF_LOG_ID = @DUPLICATE_OF_LOG_ID
+    WHERE BulkResumeAtsScoreLogID = @BulkResumeAtsScoreLogID;
+
+    SELECT @@ROWCOUNT AS RowsAffected;
+END
+GO
+

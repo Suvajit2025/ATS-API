@@ -56,7 +56,7 @@ namespace ATS.API.Controllers
         /// <param name="resumes">List of resume files (PDF, DOCX, DOC) uploaded via multipart form data.</param>
         /// <returns>HTTP 202 Accepted with batch details on success, or HTTP 400 Bad Request on validation failure.</returns>
         [HttpPost("bulk-resume-upload")]
-        public async Task<IActionResult> BulkResumeUploadScoreATSGenerate([FromForm] int postId, [FromForm] List<IFormFile> resumes)
+        public async Task<IActionResult> BulkResumeUploadScoreATSGenerate([FromForm] int postId, [FromForm] List<IFormFile> resumes, [FromForm] int locationId = 0)
         {
             try
             {
@@ -96,6 +96,8 @@ namespace ATS.API.Controllers
 
                 ATSJobDescription jobDescription = jobs.First();
                 int atsHeadRatingId = jobDescription.ATS_HEAD_RATING_ID;
+                if (locationId <= 0)
+                    locationId = ResolveLocationId(jobDescription);
 
                 // Validate that the job description contains sufficient content for AI evaluation
                 if (!HasProperJobDescription(jobDescription))
@@ -164,7 +166,7 @@ namespace ATS.API.Controllers
                     // 3. Check duplicate in database for this post
                     if (!string.IsNullOrWhiteSpace(fileHash))
                     {
-                        JObject existingResume = await _bulkResumeService.GetExistingBulkResumeByHashAsync(postId, fileHash);
+                        JObject existingResume = await _bulkResumeService.GetExistingBulkResumeByHashAsync(postId, fileHash, locationId);
                         if (existingResume != null)
                         {
                             rejectedFiles.Add(new
@@ -212,7 +214,7 @@ namespace ATS.API.Controllers
                 {
                     using var scope = _serviceScopeFactory.CreateScope();
                     var bulkResumeService = scope.ServiceProvider.GetRequiredService<BulkResumeService>();
-                    await ProcessBulkResumeBatchAsync(batchId, bulkResumeService, postId, jobDescription, queuedFiles, token);
+                    await ProcessBulkResumeBatchAsync(batchId, bulkResumeService, postId, locationId, jobDescription, queuedFiles, token);
                 });
 
                 return Accepted(new
@@ -252,11 +254,13 @@ namespace ATS.API.Controllers
         /// <param name="jobDescription">Associated job description model.</param>
         /// <param name="queuedFiles">List of queued resume files to process.</param>
         /// <param name="token">Cancellation token for background task termination.</param>
-        private async Task ProcessBulkResumeBatchAsync(string batchId, BulkResumeService bulkResumeService, int postId, ATSJobDescription jobDescription, List<BulkResumeQueuedFile> queuedFiles, CancellationToken token)
+        private async Task ProcessBulkResumeBatchAsync(string batchId, BulkResumeService bulkResumeService, int postId, int locationId, ATSJobDescription jobDescription, List<BulkResumeQueuedFile> queuedFiles, CancellationToken token)
         {
             int atsHeadRatingId = jobDescription.ATS_HEAD_RATING_ID;
             int companyId = jobDescription.CompanyID;
             int departmentId = jobDescription.DepartmentID > 0 ? jobDescription.DepartmentID : jobDescription.DEPARTMENT_ID;
+            if (locationId <= 0)
+                locationId = ResolveLocationId(jobDescription);
 
             var parallelOptions = new ParallelOptions
             {
@@ -292,12 +296,12 @@ namespace ATS.API.Controllers
                             ["reason"] = scanResult.Message
                         };
 
-                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, null, null, null, atsHeadRatingId, null, "SecurityScanFailed", false, scanFailedJson, null, false, null);
+                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, null, null, null, atsHeadRatingId, null, "SecurityScanFailed", false, scanFailedJson, null, false, null, locationId: locationId);
                         return;
                     }
 
                     // 2. Re-verify database deduplication in case a parallel worker finished earlier
-                    JObject existingResume = await bulkResumeService.GetExistingBulkResumeByHashAsync(postId, fileHash);
+                    JObject existingResume = await bulkResumeService.GetExistingBulkResumeByHashAsync(postId, fileHash, locationId);
 
                     if (existingResume != null)
                     {
@@ -314,7 +318,7 @@ namespace ATS.API.Controllers
                             ["fileHash"] = fileHash
                         };
 
-                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, null, null, null, atsHeadRatingId, null, "Duplicate", false, duplicateJson, null, true, duplicateOfLogId);
+                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, null, null, null, atsHeadRatingId, null, "Duplicate", false, duplicateJson, null, true, duplicateOfLogId, locationId: locationId);
                         return;
                     }
 
@@ -331,7 +335,7 @@ namespace ATS.API.Controllers
                             ["fileHash"] = fileHash
                         };
 
-                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, null, null, null, atsHeadRatingId, null, "ExtractionFailed", false, extractionFailedJson, null, false, null);
+                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, null, null, null, atsHeadRatingId, null, "ExtractionFailed", false, extractionFailedJson, null, false, null, locationId: locationId);
                         return;
                     }
 
@@ -356,7 +360,7 @@ namespace ATS.API.Controllers
                             ["fileHash"] = fileHash
                         };
 
-                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, candidateName, mailId, phoneNumber, atsHeadRatingId, null, "CandidateAlreadyExists", false, candidateAlreadyExistsJson, candidateJson, true, duplicateOfLogId);
+                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, candidateName, mailId, phoneNumber, atsHeadRatingId, null, "CandidateAlreadyExists", false, candidateAlreadyExistsJson, candidateJson, true, duplicateOfLogId, locationId: locationId);
                         return;
                     }
 
@@ -377,12 +381,33 @@ namespace ATS.API.Controllers
                     // 7. Sanitize, tag metadata, determine shortlisting status, and persist score
                     scoreJson = bulkResumeService.SanitizeAndValidateAtsScoreJson(scoreJson, promptResult);
                     scoreJson["batchId"] = batchId;
-                    string atsStatus = scoreJson["Status"]?.ToString();
-                    bool isShortlisted = bulkResumeService.IsAtsShortlisted(scoreJson);
+                    string atsStatus = scoreJson["Status"]?.ToString() ?? string.Empty;
+                    bool isShortlisted = string.Equals(atsStatus, "Shortlisted", StringComparison.OrdinalIgnoreCase);
+                    bool isDuplicate = string.Equals(atsStatus, "CandidateAlreadyExists", StringComparison.OrdinalIgnoreCase) ||
+                                       string.Equals(atsStatus, "Duplicate", StringComparison.OrdinalIgnoreCase);
+
                     scoreJson["manualActionRequired"] = true;
                     scoreJson["manualActionMessage"] = "HR must manually send the exam link or register the candidate for EAF from the bulk resume action screen.";
 
-                    await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, candidateName, mailId, phoneNumber, atsHeadRatingId, null, atsStatus, isShortlisted, scoreJson, candidateJson, false, null);
+                    await bulkResumeService.SaveBulkResumeAtsScoreAsync(
+                        postId,
+                        companyId,
+                        departmentId,
+                        queuedFile.OriginalFileName,
+                        queuedFile.SavedFileName,
+                        fileHash,
+                        candidateName,
+                        mailId,
+                        phoneNumber,
+                        atsHeadRatingId,
+                        null,
+                        atsStatus,
+                        isShortlisted,
+                        scoreJson,
+                        candidateJson,
+                        isDuplicate,
+                        null,
+                        locationId: locationId);
                 }
                 catch (Exception ex)
                 {
@@ -398,7 +423,7 @@ namespace ATS.API.Controllers
                             ["fileHash"] = fileHash
                         };
 
-                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, candidateName, mailId, phoneNumber, atsHeadRatingId, null, "ProcessingFailed", false, errorJson, candidateJson, false, null);
+                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, candidateName, mailId, phoneNumber, atsHeadRatingId, null, "ProcessingFailed", false, errorJson, candidateJson, false, null, locationId: locationId);
                     }
                     catch
                     {
@@ -472,6 +497,15 @@ namespace ATS.API.Controllers
                     else if (int.TryParse(Request.Form["Departmentid"], out int didi) && didi > 0) departmentId = didi;
                 }
 
+                int locationId = request.LocationId;
+                if (locationId <= 0 && Request.HasFormContentType)
+                {
+                    if (int.TryParse(Request.Form["LocationID"], out int lid) && lid > 0) locationId = lid;
+                    else if (int.TryParse(Request.Form["LocationId"], out int lidi) && lidi > 0) locationId = lidi;
+                    else if (int.TryParse(Request.Form["LocId"], out int locid) && locid > 0) locationId = locid;
+                    else if (int.TryParse(Request.Form["locid"], out int locidi) && locidi > 0) locationId = locidi;
+                }
+
                 string candidateName = FirstNonEmpty(
                     request.CandidateName,
                     Request.HasFormContentType ? Request.Form["CandidateName"].ToString() : null,
@@ -491,13 +525,11 @@ namespace ATS.API.Controllers
 
                 // Resolve uploaded Photo / Image file from model binding or form files collection
                 IFormFile? photoFile = request.Image
-                    ?? request.PhotoFile
-                    ?? (Request.HasFormContentType && Request.Form.Files.Count > 0 ? (Request.Form.Files["Image"] ?? Request.Form.Files["PhotoFile"] ?? Request.Form.Files["ImageFile"] ?? Request.Form.Files["Photo"] ?? Request.Form.Files["image"] ?? Request.Form.Files["photo"]) : null);
+                    ?? (Request.HasFormContentType && Request.Form.Files.Count > 0 ? (Request.Form.Files["Image"] ?? Request.Form.Files["Photo"] ?? Request.Form.Files["image"] ?? Request.Form.Files["photo"]) : null);
 
                 // Resolve uploaded CV / Resume file from model binding or form files collection
                 IFormFile? cvFile = request.CV
-                    ?? request.CVFile
-                    ?? (Request.HasFormContentType && Request.Form.Files.Count > 0 ? (Request.Form.Files["CV"] ?? Request.Form.Files["CVFile"] ?? Request.Form.Files["CvFile"] ?? Request.Form.Files["Resume"] ?? Request.Form.Files["ResumeFile"] ?? Request.Form.Files["Cv"] ?? Request.Form.Files["cv"] ?? Request.Form.Files["resume"]) : null);
+                    ?? (Request.HasFormContentType && Request.Form.Files.Count > 0 ? (Request.Form.Files["CV"] ?? Request.Form.Files["Resume"] ?? Request.Form.Files["cv"] ?? Request.Form.Files["resume"]) : null);
 
                 // =========================================================================
                 // WORKFLOW 2: Update existing candidate (CandidateId > 0, e.g. updating Image)
@@ -518,6 +550,7 @@ namespace ATS.API.Controllers
                     int existingPostId = existingCandidate["POST_ID"]?.Value<int>() ?? postId;
                     int existingCompanyId = existingCandidate["COMPANY_ID"]?.Value<int>() ?? companyId;
                     int existingDepartmentId = existingCandidate["DEPARTMENT_ID"]?.Value<int>() ?? departmentId;
+                    int existingLocationId = existingCandidate["LOCATION_ID"]?.Value<int>() ?? locationId;
                     int existingAtsHeadRatingId = existingCandidate["ATS_HEAD_RATING_ID"]?.Value<int>() ?? request.AtsHeadRatingId;
                     string existingCandidateName = existingCandidate["CANDIDATE_NAME"]?.ToString() ?? candidateName;
                     string existingMailId = existingCandidate["MAIL_ID"]?.ToString() ?? mailId;
@@ -525,8 +558,20 @@ namespace ATS.API.Controllers
                     string existingOriginalCv = existingCandidate["CV_NAME"]?.ToString() ?? request.OriginalCvName;
                     string existingSavedCv = existingCandidate["SAVED_CV_NAME"]?.ToString() ?? request.SavedCvName;
                     string existingFileHash = existingCandidate["FILE_HASH"]?.ToString() ?? request.FileHash;
-                    string existingStatus = existingCandidate["ATS_STATUS"]?.ToString() ?? request.Status;
-                    bool existingIsShortlisted = existingCandidate["IS_SHORTLISTED"]?.Value<bool>() ?? request.IsShortlisted;
+                    string existingStatus = CleanString(request.Status);
+                    if (string.IsNullOrWhiteSpace(existingStatus))
+                    {
+                        existingStatus = existingCandidate["ATS_STATUS"]?.ToString() ?? "LmsApplication";
+                    }
+
+                    // Only if ATS_STATUS = Shortlisted then IS_SHORTLISTED = 1 else 0
+                    bool existingIsShortlisted = string.Equals(existingStatus, "Shortlisted", StringComparison.OrdinalIgnoreCase);
+
+                    // When ATS_STATUS = 'CandidateAlreadyExists' or 'Duplicate' then IS_DUPLICATE = 1 else 0
+                    bool existingIsDuplicate = string.Equals(existingStatus, "CandidateAlreadyExists", StringComparison.OrdinalIgnoreCase) ||
+                                               string.Equals(existingStatus, "Duplicate", StringComparison.OrdinalIgnoreCase);
+
+                    long? existingDuplicateOfLogId = null;
                     long? existingGeneratedCandidateId = existingCandidate["GENERATED_CANDIDATE_ID"]?.Value<long?>() ?? request.GeneratedCandidateId;
                     string existingImageLocation = existingCandidate["IMAGE_FILE_LOCATION"]?.ToString() ?? string.Empty;
                     string existingImageName = FirstNonEmpty(
@@ -591,11 +636,12 @@ namespace ATS.API.Controllers
                         existingIsShortlisted,
                         existingScoreJson,
                         existingCandidateJson,
-                        false,
-                        null,
+                        existingIsDuplicate,
+                        existingDuplicateOfLogId,
                         existingImageLocation,
                         existingImageName,
-                        candidateId);
+                        candidateId,
+                        existingLocationId);
 
                     return Ok(new
                     {
@@ -640,6 +686,9 @@ namespace ATS.API.Controllers
 
                     if (atsHeadRatingId <= 0)
                         atsHeadRatingId = jobDescription.ATS_HEAD_RATING_ID;
+
+                    if (locationId <= 0)
+                        locationId = ResolveLocationId(jobDescription);
                 }
 
                 // 1. Process and save Image if provided
@@ -662,10 +711,11 @@ namespace ATS.API.Controllers
                 }
 
                 // 2. Process and save CV file to disk if provided
-                string originalCvName = request.OriginalCvName;
-                string savedCvName = request.SavedCvName;
+                string originalCvName = CleanString(request.OriginalCvName);
+                string savedCvName = CleanString(request.SavedCvName);
                 string savedFilePath = string.Empty;
-                string fileHash = request.FileHash;
+                string fileHash = CleanString(request.FileHash);
+                string requestedStatus = CleanString(request.Status);
 
                 if (cvFile != null && cvFile.Length > 0)
                 {
@@ -675,6 +725,19 @@ namespace ATS.API.Controllers
                     savedCvName = savedName;
                     savedFilePath = savedPath;
                     fileHash = await _bulkResumeService.ComputeFileHashAsync(savedPath);
+                }
+                else if (!string.IsNullOrWhiteSpace(savedCvName))
+                {
+                    string uploadFolder = _bulkResumeService.GetUploadFolder();
+                    string candidatePath = Path.Combine(uploadFolder, savedCvName);
+                    if (System.IO.File.Exists(candidatePath))
+                    {
+                        savedFilePath = candidatePath;
+                        if (string.IsNullOrWhiteSpace(fileHash))
+                        {
+                            fileHash = await _bulkResumeService.ComputeFileHashAsync(candidatePath);
+                        }
+                    }
                 }
 
                 // Fallback / default candidate details if not explicitly passed
@@ -688,7 +751,7 @@ namespace ATS.API.Controllers
                 }
 
                 // Initialize candidate profile JSON
-                JObject candidateJson = TryParseJsonObject(request.CandidateJson);
+                JObject candidateJson = TryParseJsonObject(CleanString(request.CandidateJson));
                 if (!candidateJson.HasValues)
                 {
                     candidateJson = new JObject
@@ -714,9 +777,19 @@ namespace ATS.API.Controllers
 
                 // Initialize initial ATS score JSON and status
                 bool hasCvFileToProcess = !string.IsNullOrWhiteSpace(savedFilePath) && System.IO.File.Exists(savedFilePath);
-                string initialStatus = hasCvFileToProcess ? "Processing" : (string.IsNullOrWhiteSpace(request.Status) ? "LmsApplication" : request.Status);
+                string initialStatus = hasCvFileToProcess ? "Processing" : (string.IsNullOrWhiteSpace(requestedStatus) ? "LmsApplication" : requestedStatus);
 
-                JObject initialScoreJson = TryParseJsonObject(request.ScoreJson);
+                // Only if ATS_STATUS = Shortlisted then IS_SHORTLISTED = 1 else 0
+                bool initialIsShortlisted = string.Equals(initialStatus, "Shortlisted", StringComparison.OrdinalIgnoreCase);
+
+                // When ATS_STATUS = 'CandidateAlreadyExists' or 'Duplicate' then IS_DUPLICATE = 1 else 0
+                bool isDuplicate = string.Equals(initialStatus, "CandidateAlreadyExists", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(initialStatus, "Duplicate", StringComparison.OrdinalIgnoreCase);
+
+                // DUPLICATE_OF_LOG_ID = NULL
+                long? duplicateOfLogId = null;
+
+                JObject initialScoreJson = TryParseJsonObject(CleanString(request.ScoreJson));
                 if (!initialScoreJson.HasValues)
                 {
                     initialScoreJson = new JObject
@@ -740,14 +813,15 @@ namespace ATS.API.Controllers
                     atsHeadRatingId,
                     request.GeneratedCandidateId,
                     initialStatus,
-                    request.IsShortlisted,
+                    initialIsShortlisted,
                     initialScoreJson,
                     candidateJson,
-                    request.IsDuplicate,
-                    request.DuplicateOfLogId,
+                    isDuplicate,
+                    duplicateOfLogId,
                     imageFileLocation,
                     imageName,
-                    0);
+                    0,
+                    locationId);
 
                 long generatedCandidateId = bulkResumeAtsScoreLogId ?? 0;
 
@@ -764,6 +838,7 @@ namespace ATS.API.Controllers
                             postId,
                             companyId,
                             departmentId,
+                            locationId,
                             atsHeadRatingId,
                             jobDescription,
                             originalCvName,
@@ -806,6 +881,7 @@ namespace ATS.API.Controllers
             int postId,
             int companyId,
             int departmentId,
+            int locationId,
             int atsHeadRatingId,
             ATSJobDescription? jobDescription,
             string originalCvName,
@@ -838,7 +914,7 @@ namespace ATS.API.Controllers
                         postId, companyId, departmentId, originalCvName, savedCvName, fileHash,
                         candidateName, mailId, phoneNumber, atsHeadRatingId, null,
                         "SecurityScanFailed", false, scanFailedJson, null, false, null,
-                        imageFileLocation, imageName, candidateLogId);
+                        imageFileLocation, imageName, candidateLogId, locationId);
                     return;
                 }
 
@@ -856,44 +932,40 @@ namespace ATS.API.Controllers
                         postId, companyId, departmentId, originalCvName, savedCvName, fileHash,
                         candidateName, mailId, phoneNumber, atsHeadRatingId, null,
                         "ExtractionFailed", false, extractionFailedJson, null, false, null,
-                        imageFileLocation, imageName, candidateLogId);
+                        imageFileLocation, imageName, candidateLogId, locationId);
                     return;
                 }
 
-                // 3. Prepare structured candidate JSON (Fast-path: if name & email are already provided, avoid redundant AI extraction call)
-                JObject candidateJson = new JObject();
-                bool needsCandidateExtraction = string.IsNullOrWhiteSpace(candidateName) || string.IsNullOrWhiteSpace(mailId);
-
-                if (needsCandidateExtraction)
+                // 3. Parse structured candidate contact details and experience from resume text (matching Line 343)
+                JObject candidateJson;
+                try
                 {
-                    try
-                    {
-                        candidateJson = await bulkResumeService.ParseCandidateResumeJsonAsync(resumeText);
-                    }
-                    catch
-                    {
-                        candidateJson = new JObject();
-                    }
+                    candidateJson = await bulkResumeService.ParseCandidateResumeJsonAsync(resumeText);
+                }
+                catch
+                {
+                    candidateJson = new JObject();
+                }
 
-                    // Merge / fallback contact info
-                    if (string.IsNullOrWhiteSpace(candidateName))
-                    {
-                        candidateName = bulkResumeService.GetCandidateName(candidateJson);
-                    }
-                    if (string.IsNullOrWhiteSpace(mailId))
-                    {
-                        mailId = bulkResumeService.GetJsonString(candidateJson, "Email");
-                    }
+                // Fallback / merge contact info if not provided in original request
+                if (string.IsNullOrWhiteSpace(candidateName))
+                {
+                    candidateName = bulkResumeService.GetCandidateName(candidateJson);
+                }
+                if (string.IsNullOrWhiteSpace(mailId))
+                {
+                    mailId = bulkResumeService.GetJsonString(candidateJson, "Email");
+                }
+                if (string.IsNullOrWhiteSpace(phoneNumber))
+                {
+                    phoneNumber = bulkResumeService.GetJsonString(candidateJson, "Mobile");
                     if (string.IsNullOrWhiteSpace(phoneNumber))
                     {
-                        phoneNumber = bulkResumeService.GetJsonString(candidateJson, "Mobile");
-                        if (string.IsNullOrWhiteSpace(phoneNumber))
-                        {
-                            phoneNumber = bulkResumeService.GetJsonString(candidateJson, "Phone");
-                        }
+                        phoneNumber = bulkResumeService.GetJsonString(candidateJson, "Phone");
                     }
                 }
 
+                // Merge caller-provided values into extracted candidateJson
                 if (!string.IsNullOrWhiteSpace(candidateName))
                 {
                     candidateJson["CandidateName"] = candidateName;
@@ -976,6 +1048,10 @@ namespace ATS.API.Controllers
                 }
 
                 // 6. Update candidate row in BulkResumeAtsScoreLog with calculated score, candidate JSON, status, and shortlist flag
+                bool isDuplicate = string.Equals(status, "CandidateAlreadyExists", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(status, "Duplicate", StringComparison.OrdinalIgnoreCase);
+                long? duplicateOfLogId = null;
+
                 await bulkResumeService.SaveBulkResumeAtsScoreAsync(
                     postId,
                     companyId,
@@ -992,11 +1068,12 @@ namespace ATS.API.Controllers
                     isShortlisted,
                     scoreJson,
                     candidateJson,
-                    false,
-                    null,
+                    isDuplicate,
+                    duplicateOfLogId,
                     imageFileLocation,
                     imageName,
-                    candidateLogId);
+                    candidateLogId,
+                    locationId);
             }
             catch (Exception ex)
             {
@@ -1012,7 +1089,7 @@ namespace ATS.API.Controllers
                         postId, companyId, departmentId, originalCvName, savedCvName, fileHash,
                         candidateName, mailId, phoneNumber, atsHeadRatingId, null,
                         "EvaluationError", false, errorJson, null, false, null,
-                        imageFileLocation, imageName, candidateLogId);
+                        imageFileLocation, imageName, candidateLogId, locationId);
                 }
                 catch
                 {
@@ -1037,6 +1114,7 @@ namespace ATS.API.Controllers
             [FromQuery] int? companyId,
             [FromQuery] int? departmentId,
             [FromQuery] int? postId,
+            [FromQuery] int? locationId,
             [FromQuery] string? keyword,
             [FromQuery] DateTime? fromDate,
             [FromQuery] DateTime? toDate,
@@ -1048,6 +1126,7 @@ namespace ATS.API.Controllers
                     companyId,
                     departmentId,
                     postId,
+                    locationId,
                     keyword,
                     fromDate,
                     toDate,
@@ -1068,6 +1147,7 @@ namespace ATS.API.Controllers
                         companyId,
                         departmentId,
                         postId,
+                        locationId,
                         keyword,
                         fromDate,
                         toDate,
@@ -1116,6 +1196,49 @@ namespace ATS.API.Controllers
                 return boolValue;
 
             return bool.TryParse(value.ToString(), out bool parsed) && parsed;
+        }
+
+        private static int GetJsonInt(JObject json, string key)
+        {
+            if (json == null)
+                return 0;
+
+            JToken? token = json[key];
+            if (token == null || token.Type == JTokenType.Null)
+                return 0;
+
+            if (token.Type == JTokenType.Integer)
+                return token.Value<int>();
+
+            return int.TryParse(token.ToString(), out int value) ? value : 0;
+        }
+
+        private static int ResolveLocationId(ATSJobDescription? jobDescription)
+        {
+            if (jobDescription == null)
+                return 0;
+
+            if (jobDescription.LocationID > 0)
+                return jobDescription.LocationID;
+
+            if (jobDescription.LOCATION_ID > 0)
+                return jobDescription.LOCATION_ID;
+
+            return 0;
+        }
+
+        private static ATSJobDescription SelectJobDescriptionForLocation(List<ATSJobDescription> jobs, int locationId)
+        {
+            if (jobs == null || jobs.Count == 0)
+                return new ATSJobDescription();
+
+            if (locationId <= 0)
+                return jobs.First();
+
+            return jobs.FirstOrDefault(job =>
+                    job.LocationID == locationId
+                    || job.LOCATION_ID == locationId)
+                ?? jobs.First();
         }
 
         /// <summary>
@@ -1302,15 +1425,26 @@ namespace ATS.API.Controllers
                     });
                 }
 
-                JObject result = await _bulkResumeService.RegisterBulkResumeCandidateManuallyAsync(request.TempCandidateId, request.ManualReason ?? string.Empty);
+                JObject result = await _bulkResumeService.RegisterBulkResumeCandidateManuallyAsync(
+                    request.TempCandidateId,
+                    request.ManualReason ?? string.Empty,
+                    request.LocationId);
 
                 bool success = result["Success"]?.Value<bool>() ?? false;
+                var response = new
+                {
+                    Success = success,
+                    Message = result["Message"]?.ToString() ?? string.Empty,
+                    TempCandidateId = result["TempCandidateId"]?.Value<long?>() ?? request.TempCandidateId,
+                    CandidateId = result["CandidateId"]?.Value<long?>()
+                };
+
                 if (success)
                 {
-                    return Ok(result);
+                    return Ok(response);
                 }
 
-                return BadRequest(result);
+                return BadRequest(response);
             }
             catch (Exception ex)
             {
@@ -1353,12 +1487,43 @@ namespace ATS.API.Controllers
                     return NotFound(new
                     {
                         Success = false,
-                        Message = "Temp candidate not found."
+                        TempCandidateId = request.TempCandidateId,
+                        Message = $"Candidate with TempCandidateId {request.TempCandidateId} was not found."
                     });
                 }
 
-                int postId = tempCandidate["POST_ID"]?.Value<int>() ?? 0;
-                string mailId = tempCandidate["MAIL_ID"]?.ToString();
+                int postId = GetJsonInt(tempCandidate, "POST_ID");
+                int locationId = request.LocationId > 0
+                    ? request.LocationId
+                    : GetJsonInt(tempCandidate, "LOCATION_ID");
+                string mailId = FirstNonEmpty(
+                    tempCandidate["MAIL_ID"]?.ToString(),
+                    tempCandidate["MailId"]?.ToString(),
+                    tempCandidate["Email"]?.ToString());
+                string candidateName = FirstNonEmpty(
+                    tempCandidate["CANDIDATE_NAME"]?.ToString(),
+                    tempCandidate["CandidateName"]?.ToString(),
+                    "Candidate");
+
+                if (postId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        TempCandidateId = request.TempCandidateId,
+                        Message = "PostId is missing for this temp candidate. Exam link cannot be sent."
+                    });
+                }
+
+                if (locationId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        TempCandidateId = request.TempCandidateId,
+                        Message = "LocationId is required. Exam link cannot be sent."
+                    });
+                }
 
                 if (string.IsNullOrWhiteSpace(mailId))
                 {
@@ -1382,7 +1547,7 @@ namespace ATS.API.Controllers
                     });
                 }
 
-                ATSJobDescription jobDescription = jobs.First();
+                ATSJobDescription jobDescription = SelectJobDescriptionForLocation(jobs, locationId);
 
                 if (jobDescription.ExamTaggingID == 0)
                 {
@@ -1396,24 +1561,26 @@ namespace ATS.API.Controllers
 
                 int companyId = jobDescription.CompanyID > 0
                     ? jobDescription.CompanyID
-                    : (tempCandidate["COMPANY_ID"]?.Value<int>() ?? 0);
+                    : GetJsonInt(tempCandidate, "COMPANY_ID");
 
                 int departmentId = jobDescription.DepartmentID > 0
                     ? jobDescription.DepartmentID
-                    : (jobDescription.DEPARTMENT_ID > 0 ? jobDescription.DEPARTMENT_ID : (tempCandidate["DEPARTMENT_ID"]?.Value<int>() ?? 0));
+                    : (jobDescription.DEPARTMENT_ID > 0 ? jobDescription.DEPARTMENT_ID : GetJsonInt(tempCandidate, "DEPARTMENT_ID"));
 
                 var mailRequest = new LmsExamLinkMailRequest
                 {
                     CandidateId = request.TempCandidateId,
                     CandidateMailId = mailId,
-                    CandidateName = tempCandidate["CANDIDATE_NAME"]?.ToString(),
+                    CandidateName = candidateName,
                     CompanyName = jobDescription.COMPANY_NAME,
                     AppliedPost = jobDescription.POST,
                     DepartmentName = jobDescription.DEPARTMENT_NAME,
+                    locationName = jobDescription.LOCATION_NAME,
                     ExamTaggingId = jobDescription.ExamTaggingID,
                     CompanyId = companyId,
                     DepartmentId = departmentId,
-                    PostId = postId
+                    PostId = postId,
+                    LocationId = locationId
                 };
 
                 // Queue exam link email dispatch via background queue
@@ -1423,11 +1590,12 @@ namespace ATS.API.Controllers
                 {
                     Success = true,
                     TempCandidateId = request.TempCandidateId,
-                    CandidateName = tempCandidate["CANDIDATE_NAME"]?.ToString(),
+                    CandidateName = candidateName,
                     MailId = mailId,
-                    AtsStatus = tempCandidate["ATS_STATUS"]?.ToString(),
-                    ManualReason = request.ManualReason,
-                    Message = "Manual exam link mail queued."
+                    AtsStatus = tempCandidate["ATS_STATUS"]?.ToString() ?? string.Empty,
+                    LocationId = locationId,
+                    ManualReason = request.ManualReason ?? string.Empty,
+                    Message = $"Exam link email queued successfully for {candidateName}."
                 });
             }
             catch (Exception ex)
@@ -1451,11 +1619,7 @@ namespace ATS.API.Controllers
         /// <returns>HTTP 200 OK with the generated ExamLink, ExamTaggingId, and job metadata.</returns>
         [HttpGet("generate-exam-link")]
         [HttpPost("generate-exam-link")]
-        public async Task<IActionResult> GenerateExamLink(
-            [FromQuery] int postId,
-            [FromQuery] int? companyId = null,
-            [FromQuery] int? departmentId = null,
-            [FromQuery] long candidateId = 0)
+        public async Task<IActionResult> GenerateExamLink([FromQuery] int postId,[FromQuery] int? companyId = null,[FromQuery] int? departmentId = null,[FromQuery] int? locationId = null,[FromQuery] long candidateId = 0)
         {
             try
             {
@@ -1500,21 +1664,27 @@ namespace ATS.API.Controllers
                 int resolvedDepartmentId = (departmentId.HasValue && departmentId.Value > 0)
                     ? departmentId.Value
                     : (jobDescription.DepartmentID > 0 ? jobDescription.DepartmentID : jobDescription.DEPARTMENT_ID);
+                int resolvedLocationId = (locationId.HasValue && locationId.Value > 0)
+                    ? locationId.Value
+                    : (jobDescription.LocationID > 0 ? jobDescription.LocationID : jobDescription.LOCATION_ID);
 
                 string companyName = jobDescription.COMPANY_NAME ?? string.Empty;
                 string postName = jobDescription.POST ?? jobDescription.JobTitle ?? string.Empty;
                 string departmentName = jobDescription.DEPARTMENT_NAME ?? string.Empty;
+                string locationName = jobDescription.LOCATION_NAME ?? string.Empty;
 
                 string examLink = _lmsExamLinkService.BuildExamLink(
                     jobDescription.ExamTaggingID,
                     resolvedCompanyId,
                     resolvedDepartmentId,
                     postId,
+                    resolvedLocationId,
                     candidateId,
                     string.Empty,
                     companyName,
                     postName,
-                    departmentName);
+                    departmentName,
+                    locationName);
 
                 return Ok(new
                 {
@@ -1522,12 +1692,14 @@ namespace ATS.API.Controllers
                     PostId = postId,
                     CompanyId = resolvedCompanyId,
                     DepartmentId = resolvedDepartmentId,
+                    LocationId = resolvedLocationId,
                     ExamTaggingId = jobDescription.ExamTaggingID,
                     CandidateId = candidateId,
                     AppliedPost = postName,
                     PostName = postName,
                     CompanyName = companyName,
                     DepartmentName = departmentName,
+                    LocationName = locationName,
                     ExamLink = examLink
                 });
             }
@@ -1609,11 +1781,11 @@ namespace ATS.API.Controllers
             {
                 if (request == null)
                 {
-                    return BadRequest(new
+                    return new
                     {
                         Success = false,
                         Message = "Request body is required."
-                    });
+                    };
                 }
 
                 /*
@@ -1622,7 +1794,7 @@ namespace ATS.API.Controllers
                  * 2. If that real candidate exists, save the exam result into HEAD_ATS_SCORE.
                  * 3. If no real candidate exists, treat candidateId as TempCandidateId
                  *    (BulkResumeAtsScoreLogID) and update BulkResumeAtsScoreLog.
-                 * 4. If neither record exists, return NotFound.
+                 * 4. If neither record exists, return failure payload.
                  */
                 long candidateIdFromLms = request.CandidateId.GetValueOrDefault();
                 long tempCandidateId = request.TempCandidateId.GetValueOrDefault() > 0
@@ -1633,11 +1805,11 @@ namespace ATS.API.Controllers
 
                 if (candidateIdFromLms <= 0 && tempCandidateId <= 0)
                 {
-                    return BadRequest(new
+                    return new
                     {
                         Success = false,
                         Message = "Candidate id is required."
-                    });
+                    };
                 }
 
                 // Check if candidate exists in primary recruitment table
@@ -1645,7 +1817,7 @@ namespace ATS.API.Controllers
                 {
                     await _bulkResumeService.SaveLmsExamResultToHeadAtsScoreAsync(candidateIdFromLms, examMarksObtainScore, isShortlisted);
 
-                    return Ok(new
+                    return new
                     {
                         Success = true,
                         CandidateId = candidateIdFromLms,
@@ -1653,7 +1825,7 @@ namespace ATS.API.Controllers
                         IsShortlisted = isShortlisted,
                         UpdatedTable = "HEAD_ATS_SCORE",
                         Message = "Exam result saved for existing recruitment candidate."
-                    });
+                    };
                 }
 
                 // Check if temporary bulk candidate log exists
@@ -1663,35 +1835,35 @@ namespace ATS.API.Controllers
                 {
                     await _bulkResumeService.UpdateBulkResumeExamResultAsync(tempCandidateId, examMarksObtainScore, isShortlisted, null);
 
-                    return Ok(new
+                    return new
                     {
                         Success = true,
                         TempCandidateId = tempCandidateId,
                         ExamMarksObtainScore = examMarksObtainScore,
                         IsShortlisted = isShortlisted,
-                        CandidateName = tempCandidate["CANDIDATE_NAME"]?.ToString(),
-                        MailId = tempCandidate["MAIL_ID"]?.ToString(),
-                        PhoneNumber = tempCandidate["PHONE_NUMBER"]?.ToString(),
+                        CandidateName = FirstNonEmpty(tempCandidate["CANDIDATE_NAME"]?.ToString(), tempCandidate["CandidateName"]?.ToString()),
+                        MailId = FirstNonEmpty(tempCandidate["MAIL_ID"]?.ToString(), tempCandidate["MailId"]?.ToString(), tempCandidate["Email"]?.ToString()),
+                        PhoneNumber = FirstNonEmpty(tempCandidate["PHONE_NUMBER"]?.ToString(), tempCandidate["PhoneNumber"]?.ToString(), tempCandidate["Mobile"]?.ToString()),
                         UpdatedTable = "BulkResumeAtsScoreLog",
                         Message = "Exam result saved for temporary bulk resume candidate."
-                    });
+                    };
                 }
 
-                return NotFound(new
+                return new
                 {
                     Success = false,
                     CandidateId = candidateIdFromLms > 0 ? (long?)candidateIdFromLms : null,
                     TempCandidateId = tempCandidateId > 0 ? (long?)tempCandidateId : null,
                     Message = "Candidate id was not found in recruitment candidates or BulkResumeAtsScoreLog."
-                });
+                };
             }
             catch (Exception ex)
             {
-                return StatusCode(500, new
+                return new
                 {
                     Success = false,
                     Message = ex.Message
-                });
+                };
             }
         }
 
@@ -1716,6 +1888,21 @@ namespace ATS.API.Controllers
         }
 
         /// <summary>
+        /// Cleans a string input by stripping whitespace and treating Swagger default dummy placeholder values ("string") as empty.
+        /// </summary>
+        private static string CleanString(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return string.Empty;
+
+            string trimmed = value.Trim();
+            if (trimmed.Equals("string", StringComparison.OrdinalIgnoreCase) || trimmed.Equals("\"string\"", StringComparison.OrdinalIgnoreCase))
+                return string.Empty;
+
+            return trimmed;
+        }
+
+        /// <summary>
         /// Returns the first non-null, non-whitespace string from a collection of candidate strings.
         /// </summary>
         /// <param name="values">Array of candidate strings in priority order.</param>
@@ -1724,8 +1911,9 @@ namespace ATS.API.Controllers
         {
             foreach (string? value in values)
             {
-                if (!string.IsNullOrWhiteSpace(value))
-                    return value.Trim();
+                string cleaned = CleanString(value);
+                if (!string.IsNullOrWhiteSpace(cleaned))
+                    return cleaned;
             }
 
             return string.Empty;

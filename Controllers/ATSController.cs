@@ -1,4 +1,4 @@
-﻿using ATS.API.Interface;
+using ATS.API.Interface;
 using ATS.API.Models;
 using ATS.API.Services.MailService;
 using CommonUtility.Interface;
@@ -20,6 +20,11 @@ namespace ATS.API.Controllers
     [ApiController]
     public class ATSController : ControllerBase
     {
+        private const int MaxJobTextChars = 3000;
+        private const int MaxCandidateJsonChars = 2500;
+        private const int MaxResumeTextChars = 6500;
+        private const int MaxEvidenceSummaryChars = 2200;
+
         private readonly IBackgroundTaskQueue _backgroundTaskQueue;
         private readonly ICommonService _commonService;
         private readonly IDataService _dataService;
@@ -336,6 +341,18 @@ namespace ATS.API.Controllers
 
                 var gptResponse = await _helper.SendMessageAsync(promptResult.Prompt, _GptAPI);
 
+                if (IsAllZeroAtsResponse(gptResponse, promptResult.BreakDownArray)
+                    && !string.IsNullOrWhiteSpace(promptResult.EvidenceSummary))
+                {
+                    string retryPrompt = BuildAtsRetryPrompt(promptResult);
+                    string retryResponse = await _helper.SendMessageAsync(retryPrompt, _GptAPI);
+
+                    if (!IsAllZeroAtsResponse(retryResponse, promptResult.BreakDownArray))
+                    {
+                        gptResponse = retryResponse;
+                    }
+                }
+
 
                 if (!string.IsNullOrWhiteSpace(gptResponse))
                 {
@@ -364,49 +381,33 @@ namespace ATS.API.Controllers
                 DataTable dt = await _dataService.GetDataAsync("SP_ATS_JOBDESCRIPTION", parameters, _ConnectionString);
                 if (dt.Rows.Count > 0)
                 {
-                    profileJson = dt.Rows[0]["JobDescription"].ToString();
+                    profileJson = dt.Rows[0]["JobDescription"]?.ToString() ?? string.Empty;
                 }
 
                 if (string.IsNullOrWhiteSpace(profileJson))
                     return JsonConvert.SerializeObject(new { error = "No job profile data found." });
 
-                var jobProfileArray = JsonConvert.DeserializeObject<JArray>(profileJson);
-                var jobProfile = jobProfileArray.FirstOrDefault() as JObject;
-
-                if (jobProfile == null)
-                    return JsonConvert.SerializeObject(new { error = "Job profile format is invalid." });
-
-                // Extract and simplify fields
-                string title = jobProfile["JobTitle"]?.ToString() ?? "";
-                string location = jobProfile["Location"]?.ToString() ?? "";
-                string experience = jobProfile["Experience"]?.ToString() ?? "";
-                string qualifications = jobProfile["Qualifications"]?.ToString() ?? "";
-
-                // Merge RequiredSkill + TechnicalScope and compress
-                string skills = $"{jobProfile["RequiredSkill"]?.ToString()} {jobProfile["TechnicalScope"]?.ToString()}";
-                skills = Regex.Replace(skills, @"\s+", " ").Trim(); // remove line breaks and extra space
-                string others = jobProfile["Others"]?.ToString() ?? "";
-                // Shorten responsibilities to top 2–3 points (if possible)
-                string responsibilities = jobProfile["JobResponsibility"]?.ToString() ?? "";
-                var responsibilityItems = Regex.Split(responsibilities, "•").Where(r => !string.IsNullOrWhiteSpace(r)).Take(3);
-                string topResponsibilities = string.Join("; ", responsibilityItems).Trim();
-
-                // Final compressed object
-                var compressed = new
+                JToken parsedToken;
+                try
                 {
-                    JobTitle = title,
-                    Location = location,
-                    Experience = experience,
-                    Qualifications = qualifications,
-                    Skills = skills,
-                    KeyResponsibilities = topResponsibilities,
-                    JD_Summary = $"We are hiring {title} in {location} with {experience}. Must have skills: {skills}. Responsibilities: {topResponsibilities}.Other Informations: {others}."
+                    parsedToken = JToken.Parse(profileJson);
+                }
+                catch
+                {
+                    return profileJson;
+                }
+
+                JObject? jobProfile = parsedToken switch
+                {
+                    JArray jArray => jArray.FirstOrDefault() as JObject,
+                    JObject jObject => jObject,
+                    _ => null
                 };
 
-                // Serialize the final job description to JSON and return
-                string jobDescription = JsonConvert.SerializeObject(compressed);
+                if (jobProfile == null)
+                    return profileJson;
 
-                return jobDescription;
+                return jobProfile.ToString(Formatting.None);
             }
             catch (Exception ex)
             {
@@ -417,7 +418,8 @@ namespace ATS.API.Controllers
                 });
             }
         }
-        private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId,string jobText,string resumeText)
+
+        private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId, string jobText, string resumeText)
         {
             var result = new AtsPromptResult();
 
@@ -437,7 +439,7 @@ namespace ATS.API.Controllers
                 {
                     result.Prompt = JsonConvert.SerializeObject(new
                     {
-                        error = "No data returned from stored procedure."
+                        error = "No ATS rating prompt data returned from stored procedure."
                     });
 
                     return result;
@@ -464,217 +466,106 @@ namespace ATS.API.Controllers
                     ?? resumeText
                     ?? "";
 
-                JToken candidateProfile =atsConfig["CandidateProfile"]?? resumeObj?["CandidateProfile"];
+                JToken candidateProfile = HasCandidateEvidence(resumeObj?["CandidateProfile"])
+                    ? resumeObj["CandidateProfile"]
+                    : atsConfig["CandidateProfile"];
 
-                decimal totalScore =atsConfig["Total Score"]?.Value<decimal>() ?? 0;
+                decimal totalScore = atsConfig["Total Score"]?.Value<decimal>() ?? 100;
 
-                var breakDownArray =JsonConvert.DeserializeObject<List<RatingItem>>(
+                var breakDownArray = JsonConvert.DeserializeObject<List<RatingItem>>(
                         atsConfig["BreakDownScore"]?.ToString() ?? "[]")
                     ?? new List<RatingItem>();
 
-                var resultStatusArray =JsonConvert.DeserializeObject<List<ResultStatusItem>>(
+                var resultStatusArray = JsonConvert.DeserializeObject<List<ResultStatusItem>>(
                         atsConfig["Result Status"]?.ToString() ?? "[]")
                     ?? new List<ResultStatusItem>();
 
-                string resultRules = string.Join(
-                    Environment.NewLine,
-                    resultStatusArray.Select(x =>
-                        $"{x.Key}: {x.Value}"));
+                if (totalScore <= 0)
+                {
+                    totalScore = breakDownArray.Sum(x =>
+                    {
+                        decimal.TryParse(x.Value, out decimal ratingValue);
+                        return ratingValue;
+                    });
+                }
 
-                string statusOptions = string.Join(
-                    ", ",
-                    resultStatusArray.Select(x =>
-                        $"\"{x.Key}\""));
+                if (totalScore <= 0)
+                    totalScore = 100;
 
-                string keywordHints = string.Join(
-                    Environment.NewLine,
-                    breakDownArray
-                        .Where(x => x.Keywords != null && x.Keywords.Any())
-                        .Select(x =>
-                            $"{x.Key}: {string.Join(", ", x.Keywords)}"));
+                string resultRules = string.Join(", ", resultStatusArray.Select(x => $"{x.Key}:{x.Value}"));
 
-                string categoryScoreRules = string.Join(
-                    Environment.NewLine,
-                    breakDownArray.Select(x =>
-                        $"- {x.Key}: maximum score = {x.Value}"));
+                string statusEvaluationInstructions = string.Join("\n", resultStatusArray.Select(x =>
+                    $"   - Assign Status = \"{x.Key}\" when percentage satisfies rule: {x.Value}"
+                ));
 
-                string scoresSchema = string.Join(
-                    ",\n    ",
-                    breakDownArray.Select(x =>
-                        $"\"{x.Key}\": {{ " +
-                        $"\"total\": {x.Value}, " +
-                        $"\"obtained\": 0, " +
-                        $"\"id\": {x.Id}, " +
-                        $"\"notes\": \"\" " +
-                        $"}}"));
+                string categoryRules = string.Join("\n", breakDownArray.Select(x =>
+                {
+                    string kws = (x.Keywords != null && x.Keywords.Any()) ? $"; keywords: {string.Join(", ", x.Keywords)}" : "";
+                    return $"- {x.Key} | id:{x.Id} | max:{x.Value}{kws}";
+                }));
 
-                string scoringInstruction = $@"
-                        SCORING RULES
+                string scoresSchema = string.Join(",\n", breakDownArray.Select(x =>
+                    $"    \"{x.Key}\": {{ \"total\": {x.Value}, \"obtained\": <0_to_{x.Value}>, \"id\": {x.Id}, \"notes\": \"short evidence\" }}"
+                ));
 
-                        1. Candidate evidence may ONLY come from:
-                           - Candidate Profile
-                           - Resume Text
+                string candidateJson = TruncateText(candidateProfile?.ToString(Formatting.None) ?? "{}", MaxCandidateJsonChars);
+                string compactJobText = BuildCompactJobText(jobText);
+                string compactResumeText = BuildCompactResumeText(extractedResumeText, compactJobText, breakDownArray);
+                string evidenceSummary = BuildEvidenceSummary(candidateJson, extractedResumeText, compactJobText, breakDownArray);
 
-                        2. Job Description contains the job requirements only.
-                           Use it to compare against the candidate.
-                           NEVER treat Job Description content as candidate evidence.
+                string prompt = $@"
+You are an ATS scoring engine. Score only from supplied data.
 
-                        3. Review the COMPLETE Candidate Profile and Resume Text before scoring.
+CONFIG
+Total: {totalScore}
+Categories:
+{categoryRules}
+Status rules: {resultRules}
 
-                        4. Consider evidence from all available resume sections, including:
-                           - Summary
-                           - Skills
-                           - Experience
-                           - Projects
-                           - Education
-                           - Certifications
-                           - Responsibilities
-                           - Technical competencies
+RULES
+- For every configured category, evaluate BOTH CANDIDATE_JSON and RESUME_TEXT.
+- Candidate data is generic; do not depend on exact field names.
+- Combine relevant evidence from both sources, then compare with JOB_DESCRIPTION and CONFIG keywords.
+- Use semantic relevance; exact keyword match is not required.
+- If a configured category name/keyword indicates location, relocation, city, state, country, or address, then candidate city/state/country/address evidence is relevant. If exact relocation readiness is absent but location evidence exists, award appropriate partial marks instead of 0.
+- Do not invent missing facts. If sources conflict, use the most explicit relevant evidence.
+- Award partial marks for incomplete but relevant evidence.
+- Use 0 only when no relevant evidence exists in either source for that category.
+- Clamp obtained: 0 <= obtained <= category total.
+- match_score = sum obtained; percentage = round((match_score / {totalScore}) * 100, 2).
+- Status must follow: {resultRules}
+- Notes must be short evidence. If obtained is 0, notes = ""No relevant evidence found.""
+- Return raw JSON only.
 
-                        5. Do NOT infer or assume information that is not explicitly stated.
+EVIDENCE_SUMMARY
+{evidenceSummary}
 
-                        6. Exact wording is NOT required when the meaning is clearly equivalent.
+JOB_DESCRIPTION
+{compactJobText}
 
-                           For example:
-                           - A technology written with a version or framework variation may satisfy
-                             the same underlying required technology when technically equivalent.
-                           - RESTful API experience may support an API-related requirement.
-                           - Multi-tenant application experience may support a SaaS-related
-                             requirement when the resume explicitly describes it as SaaS or
-                             multi-tenant platform experience.
+CANDIDATE_JSON
+{candidateJson}
 
-                        7. Keywords are hints for understanding the category.
-                           Do NOT award marks simply because a keyword appears.
+RESUME_TEXT
+{compactResumeText}
 
-                        8. Score each category based on how much explicit candidate evidence
-                           matches the requirements relevant to that category.
-
-                        9. If some requirements in a category match and others do not,
-                           award PARTIAL marks.
-
-                           Do NOT assign 0 to the entire category merely because one skill,
-                           tool, qualification or requirement is missing.
-
-                        10. Assign 0 only when there is NO explicit candidate evidence
-                            relevant to that category.
-
-                        SCORE CONSTRAINTS
-
-                        'obtained' means RAW MARKS, NOT percentage.
-
-                        Configured category maximum scores:
-
-                        {categoryScoreRules}
-
-                        For EVERY category:
-
-                        0 <= obtained <= category total
-
-                        The obtained score MUST NEVER exceed that category's configured total.
-
-                        Do NOT convert a percentage into obtained marks.
-
-                        Example principle:
-                        If a category is assessed as strongly matched, its obtained value
-                        must still remain within that category's configured maximum score.
-
-                        CALCULATION RULES
-
-                        1. match_score = sum of all category obtained scores.
-
-                        2. match_score MUST NOT exceed Total Score: {totalScore}
-
-                        3. percentage = (match_score / {totalScore}) * 100
-
-                        4. Round percentage to 2 decimal places.
-
-                        NOTES RULES
-
-                        1. Every category MUST include notes.
-
-                        2. Notes must mention the explicit candidate evidence used
-                           for that category.
-
-                        3. If some requirements matched and some were missing,
-                           mention both briefly.
-
-                        4. If obtained = 0, notes must be exactly:
-                           ""No explicit evidence found.""
-
-                        STATUS DECISION RULES
-
-                        Use the final calculated percentage and apply ONLY these rules:
-
-                        {resultRules}
-
-                        FINAL VALIDATION
-
-                        Before returning the JSON verify:
-
-                        1. Every obtained score is >= 0.
-                        2. Every obtained score is <= its category total.
-                        3. match_score equals the sum of all obtained scores.
-                        4. match_score does not exceed {totalScore}.
-                        5. percentage is calculated from match_score.
-                        6. Status follows the configured status rules.
-                        ";
-
-                                        string prompt = $@"
-                        You are an Applicant Tracking System (ATS) evaluator.
-
-                        Evaluate the candidate strictly from the supplied information.
-
-                        Do not invent candidate information.
-
-                        TOTAL SCORE
-                        -----------
-                        {totalScore}
-
-                        CATEGORY CONFIGURATION
-                        ----------------------
-                        {categoryScoreRules}
-
-                        KEYWORD HINTS
-                        -------------
-                        {keywordHints}
-
-                        CANDIDATE PROFILE
-                        -----------------
-                        {candidateProfile?.ToString(Formatting.Indented) ?? "Not available"}
-
-                        RESUME TEXT
-                        -----------
-                        {extractedResumeText}
-
-                        JOB DESCRIPTION
-                        ---------------
-                        {jobText}
-
-                        SCORING INSTRUCTIONS
-                        --------------------
-                        {scoringInstruction}
-
-                        Return JSON ONLY.
-
-                        Do not return markdown.
-                        Do not return explanations outside the JSON.
-
-                        Return exactly this structure:
-
-                        {{
-                            ""match_score"": 0,
-                            ""percentage"": 0,
-                            ""remarks"": """",
-                            ""Status"": one of [{statusOptions}],
-                            ""scores"": {{
-                                {scoresSchema}
-                            }}
-                        }}
-
-                        Replace the placeholder values with the evaluated values.
-                        ".Trim();
+JSON_SCHEMA
+{{
+  ""match_score"": <sum_of_obtained>,
+  ""percentage"": <calculated_percentage>,
+  ""remarks"": ""<short_fit_summary>"",
+  ""Status"": ""<status_from_rules>"",
+  ""scores"": {{
+{scoresSchema}
+  }}
+}}
+".Trim();
 
                 result.Prompt = prompt;
+                result.EvidenceSummary = evidenceSummary;
+                result.JobText = compactJobText;
+                result.CandidateJson = candidateJson;
+                result.ResumeText = compactResumeText;
                 result.TotalScore = totalScore;
                 result.BreakDownArray = breakDownArray;
                 result.ResultStatusArray = resultStatusArray;
@@ -691,6 +582,342 @@ namespace ATS.API.Controllers
 
                 return result;
             }
+        }
+
+        private static bool IsAllZeroAtsResponse(string rawJson, List<RatingItem> breakDownArray)
+        {
+            if (string.IsNullOrWhiteSpace(rawJson))
+                return false;
+
+            try
+            {
+                string cleanedJson = rawJson
+                    .Replace("```json", "")
+                    .Replace("```", "")
+                    .Trim('`', ' ', '\r', '\n');
+
+                JObject jObject = JObject.Parse(cleanedJson);
+                JObject scores = jObject["scores"] as JObject;
+                if (scores == null)
+                    return false;
+
+                decimal matchScore = jObject["match_score"]?.Value<decimal>() ?? 0;
+                if (matchScore > 0)
+                    return false;
+
+                foreach (RatingItem item in breakDownArray ?? new List<RatingItem>())
+                {
+                    decimal obtained = scores[item.Key]?["obtained"]?.Value<decimal>() ?? 0;
+                    if (obtained > 0)
+                        return false;
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string BuildAtsRetryPrompt(AtsPromptResult promptResult)
+        {
+            string categoryRules = string.Join("\n", (promptResult.BreakDownArray ?? new List<RatingItem>()).Select(x =>
+            {
+                string keywords = x.Keywords != null && x.Keywords.Any()
+                    ? $"; keywords: {string.Join(", ", x.Keywords)}"
+                    : "";
+
+                return $"- {x.Key} | id:{x.Id} | max:{x.Value}{keywords}";
+            }));
+
+            string statusRules = string.Join(", ", (promptResult.ResultStatusArray ?? new List<ResultStatusItem>())
+                .Select(x => $"{x.Key}:{x.Value}"));
+
+            string scoresSchema = string.Join(",\n", (promptResult.BreakDownArray ?? new List<RatingItem>()).Select(x =>
+                $"    \"{x.Key}\": {{ \"total\": {x.Value}, \"obtained\": <0_to_{x.Value}>, \"id\": {x.Id}, \"notes\": \"short evidence\" }}"
+            ));
+
+            return $@"
+You are an ATS scoring engine. The previous answer returned all zero, but candidate evidence is present.
+Re-score using only supplied data. Do not return all zero when relevant evidence exists.
+
+CONFIG
+Total: {promptResult.TotalScore}
+Categories:
+{categoryRules}
+Status rules: {statusRules}
+
+DETECTED_CANDIDATE_EVIDENCE
+{promptResult.EvidenceSummary}
+
+JOB_DESCRIPTION
+{promptResult.JobText}
+
+CANDIDATE_JSON
+{promptResult.CandidateJson}
+
+RESUME_TEXT
+{promptResult.ResumeText}
+
+Rules:
+- For every configured category, evaluate BOTH CANDIDATE_JSON and RESUME_TEXT.
+- Combine evidence from both sources, compare with JOB_DESCRIPTION and CONFIG.
+- Do not depend on exact field names; use semantic relevance.
+- If a configured category name/keyword indicates location, relocation, city, state, country, or address, then candidate city/state/country/address evidence is relevant. If exact relocation readiness is absent but location evidence exists, award appropriate partial marks instead of 0.
+- Do not invent missing facts. Award partial marks for incomplete but relevant evidence.
+- Use 0 only when no relevant evidence exists in either source for that category.
+- Clamp every obtained score: 0 <= obtained <= category total.
+- match_score = sum of obtained scores.
+- percentage = round((match_score / {promptResult.TotalScore}) * 100, 2).
+- Return raw JSON only.
+
+{{
+  ""match_score"": <sum_of_obtained>,
+  ""percentage"": <calculated_percentage>,
+  ""remarks"": ""<short_fit_summary>"",
+  ""Status"": ""<status_from_rules>"",
+  ""scores"": {{
+{scoresSchema}
+  }}
+}}
+".Trim();
+        }
+
+        private static string BuildCompactJobText(string jobText)
+        {
+            return TruncateText(FlattenJsonOrText(jobText), MaxJobTextChars);
+        }
+
+        private static string BuildCompactResumeText(string resumeText, string jobText, List<RatingItem> breakDownArray)
+        {
+            if (string.IsNullOrWhiteSpace(resumeText))
+                return string.Empty;
+
+            string configAndJobTerms = BuildConfigAndJobTermSource(jobText, breakDownArray);
+            var terms = ExtractEvidenceTerms(configAndJobTerms)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(80)
+                .ToList();
+
+            string matchedLines = BuildLineEvidence(resumeText, terms, 35);
+            if (!string.IsNullOrWhiteSpace(matchedLines))
+                return TruncateText(matchedLines, MaxResumeTextChars);
+
+            return TruncateText(resumeText, MaxResumeTextChars);
+        }
+
+        private static string BuildEvidenceSummary(string candidateJson, string resumeText, string jobText, List<RatingItem> breakDownArray)
+        {
+            var summary = new StringBuilder();
+
+            if (!string.IsNullOrWhiteSpace(candidateJson) && candidateJson != "{}")
+            {
+                summary.AppendLine("Candidate profile:");
+                summary.AppendLine(TruncateText(candidateJson, 900));
+            }
+
+            var detectedTerms = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            string source = $"{candidateJson}\n{resumeText}";
+            string configAndJobTerms = BuildConfigAndJobTermSource(jobText, breakDownArray);
+
+            foreach (string term in ExtractEvidenceTerms(configAndJobTerms))
+            {
+                if (ContainsTerm(source, term))
+                    detectedTerms.Add(term);
+            }
+
+            if (detectedTerms.Count > 0)
+            {
+                summary.AppendLine("Matched evidence terms from SP/JD:");
+                summary.AppendLine(string.Join(", ", detectedTerms.Take(30)));
+            }
+
+            string matchedLineEvidence = BuildLineEvidence(resumeText, detectedTerms, 8);
+
+            if (!string.IsNullOrWhiteSpace(matchedLineEvidence))
+            {
+                summary.AppendLine("Resume evidence lines matched from SP/JD:");
+                summary.AppendLine(matchedLineEvidence);
+            }
+
+            string categoryEvidence = BuildCategoryEvidenceSummary(candidateJson, resumeText, jobText, breakDownArray);
+            if (!string.IsNullOrWhiteSpace(categoryEvidence))
+            {
+                summary.AppendLine("Configured category evidence:");
+                summary.AppendLine(categoryEvidence);
+            }
+
+            return summary.Length > 0
+                ? TruncateText(summary.ToString().Trim(), MaxEvidenceSummaryChars)
+                : TruncateText(resumeText, MaxEvidenceSummaryChars);
+        }
+
+        private static string BuildCategoryEvidenceSummary(string candidateJson, string resumeText, string jobText, List<RatingItem> breakDownArray)
+        {
+            if (breakDownArray == null || breakDownArray.Count == 0)
+                return string.Empty;
+
+            var summary = new StringBuilder();
+            string source = $"{candidateJson}\n{resumeText}";
+            var jobTerms = ExtractEvidenceTerms(FlattenJsonOrText(jobText))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(80)
+                .ToList();
+
+            foreach (RatingItem item in breakDownArray)
+            {
+                var categoryTerms = new List<string>();
+
+                if (!string.IsNullOrWhiteSpace(item.Key))
+                    categoryTerms.Add(item.Key);
+
+                if (item.Keywords != null)
+                    categoryTerms.AddRange(item.Keywords.Where(x => !string.IsNullOrWhiteSpace(x)));
+
+                categoryTerms.AddRange(jobTerms);
+
+                var matchedTerms = ExtractEvidenceTerms(string.Join("\n", categoryTerms))
+                    .Where(term => ContainsTerm(source, term))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Take(12)
+                    .ToList();
+
+                string matchedLines = BuildLineEvidence(resumeText, matchedTerms, 3);
+                if (matchedTerms.Count == 0 && string.IsNullOrWhiteSpace(matchedLines))
+                    continue;
+
+                summary.AppendLine($"- {item.Key}: terms={string.Join(", ", matchedTerms)}");
+                if (!string.IsNullOrWhiteSpace(matchedLines))
+                    summary.AppendLine(TruncateText(matchedLines, 350));
+            }
+
+            return summary.ToString().Trim();
+        }
+
+        private static string BuildConfigAndJobTermSource(string jobText, List<RatingItem> breakDownArray)
+        {
+            var parts = new List<string>();
+
+            if (breakDownArray != null)
+            {
+                foreach (RatingItem item in breakDownArray)
+                {
+                    if (!string.IsNullOrWhiteSpace(item.Key))
+                        parts.Add(item.Key);
+
+                    if (item.Keywords != null)
+                        parts.AddRange(item.Keywords.Where(x => !string.IsNullOrWhiteSpace(x)));
+                }
+            }
+
+            parts.Add(FlattenJsonOrText(jobText));
+
+            return string.Join("\n", parts);
+        }
+
+        private static string FlattenJsonOrText(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return string.Empty;
+
+            try
+            {
+                JToken token = JToken.Parse(text);
+                return string.Join("\n", FlattenJsonValues(token));
+            }
+            catch
+            {
+                return text;
+            }
+        }
+
+        private static IEnumerable<string> FlattenJsonValues(JToken token)
+        {
+            if (token == null)
+                yield break;
+
+            if (token is JValue value)
+            {
+                string text = value.ToString();
+                if (!string.IsNullOrWhiteSpace(text))
+                    yield return text;
+
+                yield break;
+            }
+
+            foreach (JToken child in token.Children())
+            {
+                foreach (string childValue in FlattenJsonValues(child))
+                    yield return childValue;
+            }
+        }
+
+        private static IEnumerable<string> ExtractEvidenceTerms(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                yield break;
+
+            foreach (Match match in Regex.Matches(text, @"[A-Za-z][A-Za-z0-9+#./-]*(?:\s+[A-Za-z][A-Za-z0-9+#./-]*){0,2}"))
+            {
+                string term = match.Value.Trim().Trim(',', '.', ';', ':', ')', '(');
+                if (term.Length >= 3 && !IsLowValueEvidenceTerm(term))
+                    yield return term;
+            }
+        }
+
+        private static bool IsLowValueEvidenceTerm(string term)
+        {
+            string normalized = term.Trim().ToLowerInvariant();
+
+            return normalized is "and" or "the" or "with" or "for" or "from" or "using" or "must"
+                or "have" or "either" or "this" or "that" or "required" or "optional" or "candidate"
+                or "description" or "responsibilities" or "skills" or "experience" or "qualification";
+        }
+
+        private static bool ContainsTerm(string source, string term)
+        {
+            if (string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(term))
+                return false;
+
+            return source.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static string BuildLineEvidence(string text, IEnumerable<string> terms, int maxLines)
+        {
+            if (string.IsNullOrWhiteSpace(text))
+                return string.Empty;
+
+            var lines = text
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(x => x.Trim())
+                .Where(x => x.Length > 0 && terms.Any(term => ContainsTerm(x, term)))
+                .Distinct()
+                .Take(maxLines);
+
+            return string.Join("\n", lines);
+        }
+
+        private static string TruncateText(string text, int maxLength)
+        {
+            if (string.IsNullOrWhiteSpace(text) || text.Length <= maxLength)
+                return text ?? string.Empty;
+
+            return text.Substring(0, maxLength);
+        }
+
+        private static bool HasCandidateEvidence(JToken token)
+        {
+            if (token == null || token.Type == JTokenType.Null)
+                return false;
+
+            if (token.Type == JTokenType.Object)
+                return token.Children<JProperty>().Any(p => HasCandidateEvidence(p.Value));
+
+            if (token.Type == JTokenType.Array)
+                return token.Children().Any(HasCandidateEvidence);
+
+            return !string.IsNullOrWhiteSpace(token.ToString());
         }
         //private async Task<AtsPromptResult> GeneratePromptFromSpAsync(int candidateId, string jobText, string resumeText)
         //{

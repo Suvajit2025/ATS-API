@@ -12,6 +12,7 @@ namespace ATS.API.Services
         public string AppliedPost { get; set; } = string.Empty;
         public string PostName { get => AppliedPost; set => AppliedPost = value; }
         public string DepartmentName { get; set; } = string.Empty;
+        public string locationName { get; set; } = string.Empty;
         public int ExamTaggingId { get; set; }
 
         public int CompanyId { get; set; }
@@ -25,6 +26,10 @@ namespace ATS.API.Services
         public int PostId { get; set; }
         public int PostID { get => PostId; set => PostId = value; }
         public int Postid { get => PostId; set => PostId = value; }
+
+        public int LocationId { get; set; }
+        public int LocationID { get => LocationId; set => LocationId = value; }
+        public int LocId { get => LocationId; set => LocationId = value; }
     }
 
     public class LmsExamLinkMailResult
@@ -95,11 +100,13 @@ namespace ATS.API.Services
                 request.CompanyId,
                 request.DepartmentId,
                 request.PostId,
+                request.LocationId,
                 request.CandidateId,
                 mailId,
                 request.CompanyName,
                 request.AppliedPost,
-                request.DepartmentName);
+                request.DepartmentName,
+                request.locationName);
         }
 
         public string BuildExamLink(
@@ -107,11 +114,13 @@ namespace ATS.API.Services
             int companyId, 
             int departmentId, 
             int postId, 
+            int locationId = 0,
             long candidateId = 0, 
             string candidateMailId = "",
             string companyName = "",
             string postName = "",
-            string departmentName = "")
+            string departmentName = "",
+            string locationName = "")
         {
             string mailId = candidateMailId ?? string.Empty;
 
@@ -131,9 +140,12 @@ namespace ATS.API.Services
                 + "&CompanyId=" + companyId
                 + "&Departmentid=" + departmentId
                 + "&PostId=" + postId
+                + "&LocationId=" + locationId
+                + "&LocationID=" + locationId
                 + "&CompanyName=" + (companyName ?? string.Empty)
                 + "&PostName=" + (postName ?? string.Empty)
-                + "&DepartmentName=" + (departmentName ?? string.Empty);
+                + "&DepartmentName=" + (departmentName ?? string.Empty)
+                + "&LocationName=" + (locationName ?? string.Empty);
 
             string base64Query = Convert.ToBase64String(Encoding.UTF8.GetBytes(rawQuery));
 
