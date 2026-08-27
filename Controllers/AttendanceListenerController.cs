@@ -1,15 +1,18 @@
-﻿using ATS.API.Interface;
+using ATS.API.Interface;
 using ATS.API.Repository;
+using ATS.API.Services;
 using CommonUtility.Interface;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using System.Data;
 using System.Text;
 
 namespace ATS.API.Controllers
 {
     [Route("iclock/cdata")]
+    [Route("ATS/iclock/cdata")]
     [ApiController]
     public class AttendanceListenerController : ControllerBase
     {
@@ -18,16 +21,26 @@ namespace ATS.API.Controllers
         private readonly string _ConnectionString;
         private readonly IETimeTrackRepository _attendanceRepo;
         private readonly IServiceScopeFactory _scopeFactory;
-        public AttendanceListenerController(IBackgroundTaskQueue taskQueue, IConfiguration configuration, IDataService dataService, IETimeTrackRepository eTimeTrackRepository, IServiceScopeFactory scopeFactory)
+        private readonly ILogger<AttendanceListenerController> _logger;
+
+        public AttendanceListenerController(
+            IBackgroundTaskQueue taskQueue,
+            IConfiguration configuration,
+            IDataService dataService,
+            IETimeTrackRepository eTimeTrackRepository,
+            IServiceScopeFactory scopeFactory,
+            ILogger<AttendanceListenerController> logger)
         {
             _dataService = dataService;
-            _ConnectionString = configuration.GetConnectionString("DBConnSaaSEssP");
+            _ConnectionString = configuration.GetConnectionString("DBConnSaaSEssP") ?? string.Empty;
             _taskQueue = taskQueue;
             _attendanceRepo = eTimeTrackRepository;
             _scopeFactory = scopeFactory;
+            _logger = logger;
         }
+
         // ===============================================================
-        // 1. HEARTBEAT
+        // 1. HEARTBEAT / HANDSHAKE (ADMS Device Ping)
         // ===============================================================
         [HttpGet]
         public async Task<IActionResult> Handshake(string SN, string options)
@@ -53,97 +66,28 @@ namespace ATS.API.Controllers
                     return Content(sb.ToString());
                 }
 
+                _logger.LogWarning("Handshake rejected for unknown or unauthorized device SN: {SN}", SN);
                 return Content("ERROR: Unknown Device");
             }
-            catch
+            catch (Exception ex)
             {
+                _logger.LogError(ex, "Handshake error for device SN: {SN}", SN);
                 return Content("ERROR");
             }
         }
+
         // ===============================================================
-        // 2. RECEIVE DEVICE PUNCH DATA
+        // 2. RECEIVE DEVICE PUNCH DATA (Unified Bulk Insertion)
         // ===============================================================
-        //[HttpPost]
-        //public async Task<IActionResult> ReceiveData(string SN, string table, int Stamp = 0)
-        //{
-        //    if (table != "ATTLOG")
-        //        return Content("OK");
-
-        //    try
-        //    {
-        //        string body;
-
-        //        // Validate device
-        //        var parameters = new Dictionary<string, object>
-        //        {
-        //            { "@DeviceSerialNumber", SN }
-        //        };
-
-        //        DataTable dtDevice = await _dataService.GetDataAsync("PRC_API_Check_Attendance_Device", parameters, _ConnectionString);
-
-        //        if (dtDevice == null || dtDevice.Rows.Count == 0)
-        //            return Content("ERROR: Device Not Authorized");
-
-        //        using var reader = new StreamReader(Request.Body, Encoding.UTF8);
-        //        body = await reader.ReadToEndAsync();
-        //        // 2. Parse and Insert Lines
-        //        var lines = body.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-
-        //        string line;
-
-        //        while ((line in lines)
-        //        {
-        //            var parts = line.Split('\t');
-
-        //            if (parts.Length < 2)
-        //                continue;
-
-        //            if (!DateTime.TryParse(parts[1], out DateTime punchTime))
-        //                continue;
-
-        //            string empId = parts[0];
-        //            string punchState = parts.Length > 2 ? parts[2] : "0"; 
-        //            // Queue background processing
-        //            await _taskQueue.QueueBackgroundWorkItem(async token =>
-        //            {
-        //                try
-        //                {
-        //                    using var scope = _scopeFactory.CreateScope();
-
-        //                    var repo = scope.ServiceProvider
-        //                        .GetRequiredService<IETimeTrackRepository>();
-
-        //                    int rawPunchId = await repo.InsertRawPunchAsync(SN, empId, punchTime, line, punchState,"DEVICE");
-
-        //                    if (rawPunchId > 0)
-        //                    {
-        //                        await repo.ProcessDailyAttendance(rawPunchId);
-        //                    }
-        //                }
-        //                catch (Exception ex)
-        //                {
-        //                    Console.WriteLine($"Punch processing error: {ex.Message}");
-        //                }
-        //            });
-        //        }
-
-        //        return Content("OK");
-        //    }
-        //    catch
-        //    {
-        //        return Content("ERROR");
-        //    }
-        //}
         [HttpPost]
         public async Task<IActionResult> ReceiveData(string SN, string table, int Stamp = 0)
         {
-            // 1. Quick exit if not the correct table
             if (table != "ATTLOG")
                 return Content("OK");
 
             try
             {
-                // 2. Validate device first
+                // 1. Validate device
                 var parameters = new Dictionary<string, object>
                 {
                     { "@DeviceSerialNumber", SN }
@@ -152,9 +96,12 @@ namespace ATS.API.Controllers
                 DataTable dtDevice = await _dataService.GetDataAsync("PRC_API_Check_Attendance_Device", parameters, _ConnectionString);
 
                 if (dtDevice == null || dtDevice.Rows.Count == 0)
+                {
+                    _logger.LogWarning("Punch data rejected for unauthorized device SN: {SN}", SN);
                     return Content("ERROR: Device Not Authorized");
+                }
 
-                // 3. Read the payload body
+                // 2. Read payload body
                 string body;
                 using (var reader = new StreamReader(Request.Body, Encoding.UTF8))
                 {
@@ -164,57 +111,56 @@ namespace ATS.API.Controllers
                 if (string.IsNullOrWhiteSpace(body))
                     return Content("OK");
 
-                // 4. Parse Lines
+                // 3. Populate TVP table for unified PRC_Bulk_Insert_RawPunch
+                var punchTable = ETimeTrackRepository.CreateRawPunchTable();
                 var lines = body.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
 
                 foreach (var line in lines)
                 {
                     var parts = line.Split('\t');
-
-                    // Skip malformed lines
                     if (parts.Length < 2)
                         continue;
 
                     string empId = parts[0];
-
-                    // Try to parse the DateTime from the second column
                     if (!DateTime.TryParse(parts[1], out DateTime punchTime))
                         continue;
 
-                    // Optional status column
                     string punchState = parts.Length > 2 ? parts[2] : "0";
+                    punchTable.Rows.Add(SN, empId, punchTime, line, punchState, "ADMS");
+                }
 
-                    // 5. Queue background processing
-                    // We capture 'line', 'empId', 'punchTime', and 'punchState' inside the loop
-                    await _taskQueue.QueueBackgroundWorkItem(async token =>
+                if (punchTable.Rows.Count > 0)
+                {
+                    var insertedRows = await _attendanceRepo.BulkInsertRawPunchAsync(punchTable);
+
+                    if (insertedRows != null && insertedRows.Rows.Count > 0)
                     {
-                        try
+                        foreach (DataRow r in insertedRows.Rows)
                         {
-                            using var scope = _scopeFactory.CreateScope();
-                            var repo = scope.ServiceProvider.GetRequiredService<IETimeTrackRepository>();
+                            long rawPunchId = Convert.ToInt64(r["RawPunchId"]);
 
-                            // Call the Stored Procedure (with Transaction logic we added earlier)
-                            long rawPunchId = await repo.InsertRawPunchAsync(SN, empId, punchTime, line, punchState, "DEVICE");
-
-                            // If it was inserted (and wasn't a duplicate), process it
-                            if (rawPunchId > 0)
+                            await _taskQueue.QueueBackgroundWorkItem(async token =>
                             {
-                                await repo.ProcessDailyAttendance(rawPunchId);
-                            }
+                                try
+                                {
+                                    using var scope = _scopeFactory.CreateScope();
+                                    var repo = scope.ServiceProvider.GetRequiredService<IETimeTrackRepository>();
+                                    await repo.ProcessDailyAttendance(rawPunchId);
+                                }
+                                catch (Exception ex)
+                                {
+                                    _logger.LogError(ex, "Background punch processing error for RawPunchId: {RawPunchId}", rawPunchId);
+                                }
+                            });
                         }
-                        catch (Exception ex)
-                        {
-                            // Log the error (consider using ILogger instead of Console)
-                            Console.WriteLine($"Punch processing error for {empId}: {ex.Message}");
-                        }
-                    });
+                    }
                 }
 
                 return Content("OK");
             }
             catch (Exception ex)
             {
-                // Log the specific exception here if possible
+                _logger.LogError(ex, "ReceiveData error for device SN: {SN}", SN);
                 return Content("ERROR");
             }
         }

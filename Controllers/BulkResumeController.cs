@@ -56,8 +56,12 @@ namespace ATS.API.Controllers
         /// <param name="resumes">List of resume files (PDF, DOCX, DOC) uploaded via multipart form data.</param>
         /// <returns>HTTP 202 Accepted with batch details on success, or HTTP 400 Bad Request on validation failure.</returns>
         [HttpPost("bulk-resume-upload")]
-        public async Task<IActionResult> BulkResumeUploadScoreATSGenerate([FromForm] int postId, [FromForm] List<IFormFile> resumes, [FromForm] int locationId = 0)
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> BulkResumeUploadScoreATSGenerate([FromForm] BulkResumeUploadRequest request)
         {
+            int postId = request.PostId;
+            List<IFormFile> resumes = request.Resumes;
+            int locationId = request.LocationId;
             try
             {
                 // Validate that at least one resume file was provided
@@ -166,7 +170,7 @@ namespace ATS.API.Controllers
                     // 3. Check duplicate in database for this post
                     if (!string.IsNullOrWhiteSpace(fileHash))
                     {
-                        JObject existingResume = await _bulkResumeService.GetExistingBulkResumeByHashAsync(postId, fileHash, locationId);
+                        JObject existingResume = await _bulkResumeService.GetExistingBulkResumeByHashAsync(postId, fileHash, 0);
                         if (existingResume != null)
                         {
                             rejectedFiles.Add(new
@@ -198,12 +202,27 @@ namespace ATS.API.Controllers
                 // If all files in the batch were rejected / invalid
                 if (queuedFiles.Count == 0)
                 {
+                    string rejectionMessage = "No valid resume files found for background processing.";
+                    if (rejectedFiles.Count == 1)
+                    {
+                        var first = rejectedFiles[0];
+                        string reason = first.GetType().GetProperty("Reason")?.GetValue(first)?.ToString() ?? string.Empty;
+                        if (!string.IsNullOrWhiteSpace(reason))
+                        {
+                            rejectionMessage = reason;
+                        }
+                    }
+                    else if (rejectedFiles.Count > 1)
+                    {
+                        rejectionMessage = "All uploaded resume files were skipped (duplicate or invalid files). Please review the rejected files list.";
+                    }
+
                     return BadRequest(new
                     {
                         Success = false,
                         TotalUploaded = resumes.Count,
                         RejectedBeforeQueue = rejectedFiles,
-                        Message = "No valid resume files found for background processing."
+                        Message = rejectionMessage
                     });
                 }
 
@@ -301,24 +320,11 @@ namespace ATS.API.Controllers
                     }
 
                     // 2. Re-verify database deduplication in case a parallel worker finished earlier
-                    JObject existingResume = await bulkResumeService.GetExistingBulkResumeByHashAsync(postId, fileHash, locationId);
+                    JObject existingResume = await bulkResumeService.GetExistingBulkResumeByHashAsync(postId, fileHash, 0);
 
                     if (existingResume != null)
                     {
-                        long? duplicateOfLogId = existingResume["BulkResumeAtsScoreLogID"]?.Value<long?>();
-
-                        var duplicateJson = new JObject
-                        {
-                            ["batchId"] = batchId,
-                            ["message"] = "Duplicate CV upload skipped. Existing ATS score log found for the same post and file hash.",
-                            ["duplicateOfLogId"] = duplicateOfLogId,
-                            ["existingCvName"] = existingResume["CV_NAME"],
-                            ["existingSavedCvName"] = existingResume["SAVED_CV_NAME"],
-                            ["existingStatus"] = existingResume["ATS_STATUS"],
-                            ["fileHash"] = fileHash
-                        };
-
-                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, null, null, null, atsHeadRatingId, null, "Duplicate", false, duplicateJson, null, true, duplicateOfLogId, locationId: locationId);
+                        // Completely skip without saving duplicate record into database
                         return;
                     }
 
@@ -345,26 +351,22 @@ namespace ATS.API.Controllers
                     mailId = bulkResumeService.GetJsonString(candidateJson, "Email");
                     phoneNumber = bulkResumeService.GetJsonString(candidateJson, "Mobile");
 
-                    // 5. Check if the candidate email is already registered for this job post
-                    JObject existingCandidate = await bulkResumeService.GetExistingCandidateByUsernameOrMailAsync(mailId, mailId, postId);
-
-                    if (existingCandidate != null)
+                    string bulkRegNo = string.Empty;
+                    long? existingRegCandidateId = null;
+                    if (!string.IsNullOrWhiteSpace(mailId))
                     {
-                        long? duplicateOfLogId = existingCandidate["BulkResumeAtsScoreLogID"]?.Value<long?>();
-
-                        var candidateAlreadyExistsJson = new JObject
+                        JObject existingCandidate = await bulkResumeService.GetExistingCandidateByUsernameOrMailAsync(null, mailId, postId);
+                        if (existingCandidate != null)
                         {
-                            ["batchId"] = batchId,
-                            ["message"] = "Candidate already exists. ATS score generation skipped.",
-                            ["existingCandidate"] = existingCandidate,
-                            ["fileHash"] = fileHash
-                        };
-
-                        await bulkResumeService.SaveBulkResumeAtsScoreAsync(postId, companyId, departmentId, queuedFile.OriginalFileName, queuedFile.SavedFileName, fileHash, candidateName, mailId, phoneNumber, atsHeadRatingId, null, "CandidateAlreadyExists", false, candidateAlreadyExistsJson, candidateJson, true, duplicateOfLogId, locationId: locationId);
-                        return;
+                            existingRegCandidateId = existingCandidate["CandidateID"]?.Value<long?>();
+                            string foundRegNo = FirstNonEmpty(
+                                existingCandidate["RegistrationNo"]?.ToString(),
+                                existingCandidate["registrationnumber"]?.ToString());
+                            bulkRegNo = !string.IsNullOrWhiteSpace(foundRegNo) ? foundRegNo : "Not Generated";
+                        }
                     }
 
-                    // 6. Build prompt based on head rating criteria, send to LLM/GPT for ATS scoring
+                    // 5. Build prompt based on head rating criteria, send to LLM/GPT for ATS scoring
                     AtsPromptResult promptResult = await bulkResumeService.GenerateBulkPromptFromAtsHeadRatingAsync(atsHeadRatingId, jobDescription, resumeText, candidateJson);
                     string scoreResponse = await bulkResumeService.SendGptMessageAsync(promptResult.Prompt);
                     JObject scoreJson;
@@ -381,10 +383,9 @@ namespace ATS.API.Controllers
                     // 7. Sanitize, tag metadata, determine shortlisting status, and persist score
                     scoreJson = bulkResumeService.SanitizeAndValidateAtsScoreJson(scoreJson, promptResult);
                     scoreJson["batchId"] = batchId;
-                    string atsStatus = scoreJson["Status"]?.ToString() ?? string.Empty;
-                    bool isShortlisted = string.Equals(atsStatus, "Shortlisted", StringComparison.OrdinalIgnoreCase);
-                    bool isDuplicate = string.Equals(atsStatus, "CandidateAlreadyExists", StringComparison.OrdinalIgnoreCase) ||
-                                       string.Equals(atsStatus, "Duplicate", StringComparison.OrdinalIgnoreCase);
+                    bool isShortlisted = bulkResumeService.IsAtsShortlisted(scoreJson);
+                    string atsStatus = BulkResumeService.NormalizeAtsStatus(scoreJson["Status"]?.ToString(), isShortlisted);
+                    bool isDuplicate = false;
 
                     scoreJson["manualActionRequired"] = true;
                     scoreJson["manualActionMessage"] = "HR must manually send the exam link or register the candidate for EAF from the bulk resume action screen.";
@@ -400,14 +401,15 @@ namespace ATS.API.Controllers
                         mailId,
                         phoneNumber,
                         atsHeadRatingId,
-                        null,
+                        existingRegCandidateId,
                         atsStatus,
                         isShortlisted,
                         scoreJson,
                         candidateJson,
                         isDuplicate,
                         null,
-                        locationId: locationId);
+                        locationId: locationId,
+                        registrationNo: bulkRegNo);
                 }
                 catch (Exception ex)
                 {
@@ -523,6 +525,12 @@ namespace ATS.API.Controllers
                     Request.HasFormContentType ? Request.Form["Mobile"].ToString() : null,
                     Request.HasFormContentType ? Request.Form["Phone"].ToString() : null);
 
+                string registrationNo = FirstNonEmpty(
+                    request.RegistrationNo,
+                    Request.HasFormContentType ? Request.Form["RegistrationNo"].ToString() : null,
+                    Request.HasFormContentType ? Request.Form["RegNo"].ToString() : null,
+                    Request.HasFormContentType ? Request.Form["REGISTRATION_NO"].ToString() : null);
+
                 // Resolve uploaded Photo / Image file from model binding or form files collection
                 IFormFile? photoFile = request.Image
                     ?? (Request.HasFormContentType && Request.Form.Files.Count > 0 ? (Request.Form.Files["Image"] ?? Request.Form.Files["Photo"] ?? Request.Form.Files["image"] ?? Request.Form.Files["photo"]) : null);
@@ -567,12 +575,15 @@ namespace ATS.API.Controllers
                     // Only if ATS_STATUS = Shortlisted then IS_SHORTLISTED = 1 else 0
                     bool existingIsShortlisted = string.Equals(existingStatus, "Shortlisted", StringComparison.OrdinalIgnoreCase);
 
-                    // When ATS_STATUS = 'CandidateAlreadyExists' or 'Duplicate' then IS_DUPLICATE = 1 else 0
-                    bool existingIsDuplicate = string.Equals(existingStatus, "CandidateAlreadyExists", StringComparison.OrdinalIgnoreCase) ||
-                                               string.Equals(existingStatus, "Duplicate", StringComparison.OrdinalIgnoreCase);
+                    // When ATS_STATUS = 'Duplicate' then IS_DUPLICATE = 1 else 0
+                    bool existingIsDuplicate = string.Equals(existingStatus, "Duplicate", StringComparison.OrdinalIgnoreCase);
 
                     long? existingDuplicateOfLogId = null;
                     long? existingGeneratedCandidateId = existingCandidate["GENERATED_CANDIDATE_ID"]?.Value<long?>() ?? request.GeneratedCandidateId;
+                    string existingRegistrationNo = FirstNonEmpty(
+                        registrationNo,
+                        existingCandidate["REGISTRATION_NO"]?.ToString(),
+                        existingGeneratedCandidateId?.ToString());
                     string existingImageLocation = existingCandidate["IMAGE_FILE_LOCATION"]?.ToString() ?? string.Empty;
                     string existingImageName = FirstNonEmpty(
                         existingCandidate["ImageName"]?.ToString(),
@@ -608,6 +619,15 @@ namespace ATS.API.Controllers
                         existingSavedCv = updateSavedCvName;
                         existingFileHash = await _bulkResumeService.ComputeFileHashAsync(updateSavedCvPath);
                     }
+                    else if (!string.IsNullOrWhiteSpace(existingSavedCv))
+                    {
+                        string uploadFolder = _bulkResumeService.GetUploadFolder();
+                        string updateSavedCvPath = Path.Combine(uploadFolder, existingSavedCv);
+                        if (System.IO.File.Exists(updateSavedCvPath))
+                        {
+                            existingFileHash = await _bulkResumeService.ComputeFileHashAsync(updateSavedCvPath);
+                        }
+                    }
 
                     JObject existingScoreJson = TryParseJsonObject(existingCandidate["FULL_JSON"]?.ToString());
                     JObject existingCandidateJson = TryParseJsonObject(existingCandidate["CANDIDATE_JSON"]?.ToString());
@@ -641,7 +661,8 @@ namespace ATS.API.Controllers
                         existingImageLocation,
                         existingImageName,
                         candidateId,
-                        existingLocationId);
+                        existingLocationId,
+                        existingRegistrationNo);
 
                     return Ok(new
                     {
@@ -750,6 +771,23 @@ namespace ATS.API.Controllers
                         : "LMS Candidate";
                 }
 
+                if (string.IsNullOrWhiteSpace(registrationNo) && !string.IsNullOrWhiteSpace(mailId))
+                {
+                    JObject existingRegCheck = await _bulkResumeService.GetExistingCandidateByUsernameOrMailAsync(null, mailId, postId);
+                    if (existingRegCheck != null)
+                    {
+                        long? existingRegId = existingRegCheck["CandidateID"]?.Value<long?>();
+                        string foundRegNo = FirstNonEmpty(
+                            existingRegCheck["RegistrationNo"]?.ToString(),
+                            existingRegCheck["registrationnumber"]?.ToString());
+                        registrationNo = !string.IsNullOrWhiteSpace(foundRegNo) ? foundRegNo : "Not Generated";
+                        if (!request.GeneratedCandidateId.HasValue || request.GeneratedCandidateId <= 0)
+                        {
+                            request.GeneratedCandidateId = existingRegId;
+                        }
+                    }
+                }
+
                 // Initialize candidate profile JSON
                 JObject candidateJson = TryParseJsonObject(CleanString(request.CandidateJson));
                 if (!candidateJson.HasValues)
@@ -777,14 +815,11 @@ namespace ATS.API.Controllers
 
                 // Initialize initial ATS score JSON and status
                 bool hasCvFileToProcess = !string.IsNullOrWhiteSpace(savedFilePath) && System.IO.File.Exists(savedFilePath);
-                string initialStatus = hasCvFileToProcess ? "Processing" : (string.IsNullOrWhiteSpace(requestedStatus) ? "LmsApplication" : requestedStatus);
+                bool initialIsShortlisted = string.Equals(requestedStatus, "Shortlisted", StringComparison.OrdinalIgnoreCase);
+                string initialStatus = BulkResumeService.NormalizeAtsStatus(requestedStatus, initialIsShortlisted);
 
-                // Only if ATS_STATUS = Shortlisted then IS_SHORTLISTED = 1 else 0
-                bool initialIsShortlisted = string.Equals(initialStatus, "Shortlisted", StringComparison.OrdinalIgnoreCase);
-
-                // When ATS_STATUS = 'CandidateAlreadyExists' or 'Duplicate' then IS_DUPLICATE = 1 else 0
-                bool isDuplicate = string.Equals(initialStatus, "CandidateAlreadyExists", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(initialStatus, "Duplicate", StringComparison.OrdinalIgnoreCase);
+                // When duplicate file detected
+                bool isDuplicate = false;
 
                 // DUPLICATE_OF_LOG_ID = NULL
                 long? duplicateOfLogId = null;
@@ -821,7 +856,8 @@ namespace ATS.API.Controllers
                     imageFileLocation,
                     imageName,
                     0,
-                    locationId);
+                    locationId,
+                    registrationNo);
 
                 long generatedCandidateId = bulkResumeAtsScoreLogId ?? 0;
 
@@ -850,6 +886,7 @@ namespace ATS.API.Controllers
                             phoneNumber,
                             imageName,
                             imageFileLocation,
+                            registrationNo,
                             token);
                     });
                 }
@@ -893,6 +930,7 @@ namespace ATS.API.Controllers
             string phoneNumber,
             string imageName,
             string imageFileLocation,
+            string registrationNo,
             CancellationToken token)
         {
             try
@@ -914,7 +952,7 @@ namespace ATS.API.Controllers
                         postId, companyId, departmentId, originalCvName, savedCvName, fileHash,
                         candidateName, mailId, phoneNumber, atsHeadRatingId, null,
                         "SecurityScanFailed", false, scanFailedJson, null, false, null,
-                        imageFileLocation, imageName, candidateLogId, locationId);
+                        imageFileLocation, imageName, candidateLogId, locationId, registrationNo);
                     return;
                 }
 
@@ -932,7 +970,7 @@ namespace ATS.API.Controllers
                         postId, companyId, departmentId, originalCvName, savedCvName, fileHash,
                         candidateName, mailId, phoneNumber, atsHeadRatingId, null,
                         "ExtractionFailed", false, extractionFailedJson, null, false, null,
-                        imageFileLocation, imageName, candidateLogId, locationId);
+                        imageFileLocation, imageName, candidateLogId, locationId, registrationNo);
                     return;
                 }
 
@@ -962,6 +1000,19 @@ namespace ATS.API.Controllers
                     if (string.IsNullOrWhiteSpace(phoneNumber))
                     {
                         phoneNumber = bulkResumeService.GetJsonString(candidateJson, "Phone");
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(registrationNo) && !string.IsNullOrWhiteSpace(mailId))
+                {
+                    JObject existingCandidate = await bulkResumeService.GetExistingCandidateByUsernameOrMailAsync(null, mailId, postId);
+                    if (existingCandidate != null)
+                    {
+                        long? existingRegCandidateId = existingCandidate["CandidateID"]?.Value<long?>();
+                        string foundRegNo = FirstNonEmpty(
+                            existingCandidate["RegistrationNo"]?.ToString(),
+                            existingCandidate["registrationnumber"]?.ToString());
+                        registrationNo = !string.IsNullOrWhiteSpace(foundRegNo) ? foundRegNo : "Not Generated";
                     }
                 }
 
@@ -1023,18 +1074,19 @@ namespace ATS.API.Controllers
                         }
 
                         scoreJson = bulkResumeService.SanitizeAndValidateAtsScoreJson(scoreJson, promptResult);
-                        status = scoreJson["Status"]?.ToString() ?? "Evaluated";
                         isShortlisted = bulkResumeService.IsAtsShortlisted(scoreJson);
+                        status = isShortlisted ? "Shortlisted" : "Rejected";
                     }
                     catch (Exception gptEx)
                     {
                         scoreJson = new JObject
                         {
                             ["Source"] = "LMS",
-                            ["Status"] = "AtsGenerationFailed",
+                            ["Status"] = "Rejected",
                             ["Error"] = gptEx.Message
                         };
-                        status = "AtsGenerationFailed";
+                        status = "Rejected";
+                        isShortlisted = false;
                     }
                 }
                 else
@@ -1042,14 +1094,17 @@ namespace ATS.API.Controllers
                     scoreJson = new JObject
                     {
                         ["Source"] = "LMS",
-                        ["Status"] = "LmsApplication",
+                        ["Status"] = "Rejected",
                         ["Note"] = "ATS rating configuration is not mapped for this job post."
                     };
+                    status = "Rejected";
+                    isShortlisted = false;
                 }
 
+                status = BulkResumeService.NormalizeAtsStatus(status, isShortlisted);
+
                 // 6. Update candidate row in BulkResumeAtsScoreLog with calculated score, candidate JSON, status, and shortlist flag
-                bool isDuplicate = string.Equals(status, "CandidateAlreadyExists", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(status, "Duplicate", StringComparison.OrdinalIgnoreCase);
+                bool isDuplicate = false;
                 long? duplicateOfLogId = null;
 
                 await bulkResumeService.SaveBulkResumeAtsScoreAsync(
@@ -1073,7 +1128,8 @@ namespace ATS.API.Controllers
                     imageFileLocation,
                     imageName,
                     candidateLogId,
-                    locationId);
+                    locationId,
+                    registrationNo);
             }
             catch (Exception ex)
             {
@@ -1089,7 +1145,7 @@ namespace ATS.API.Controllers
                         postId, companyId, departmentId, originalCvName, savedCvName, fileHash,
                         candidateName, mailId, phoneNumber, atsHeadRatingId, null,
                         "EvaluationError", false, errorJson, null, false, null,
-                        imageFileLocation, imageName, candidateLogId, locationId);
+                        imageFileLocation, imageName, candidateLogId, locationId, registrationNo);
                 }
                 catch
                 {
@@ -1363,6 +1419,9 @@ namespace ATS.API.Controllers
                     GetJsonStringAny(candidateJson, "ProfessionalExperience", "ProfessionalExp", "TotalExperience", "Experience", "WorkExperience"),
                     "-");
                 string generatedCandidateId = tempCandidate["GENERATED_CANDIDATE_ID"]?.ToString();
+                string registrationNo = FirstNonEmpty(
+                    tempCandidate["REGISTRATION_NO"]?.ToString(),
+                    generatedCandidateId);
                 string profilePicLocation = tempCandidate["IMAGE_FILE_LOCATION"]?.ToString()?.Trim() ?? string.Empty;
                 string imageNameFromLog = FirstNonEmpty(
                     tempCandidate["ImageName"]?.ToString()?.Trim(),
@@ -1377,7 +1436,7 @@ namespace ATS.API.Controllers
                     {
                         Candidate = DisplayOrDash(candidateName),
                         CandidateID = CandidateId,
-                        RegistrationNo = DisplayOrDash(generatedCandidateId),
+                        RegistrationNo = DisplayOrDash(registrationNo),
                         Email = DisplayOrDash(email),
                         Phone = DisplayOrDash(phone),
                         ProfessionalExp = DisplayOrDash(professionalExperience),
@@ -1719,32 +1778,17 @@ namespace ATS.API.Controllers
         /// <param name="request">Dynamic JSON token containing either a single object or an array of <see cref="BulkResumeExamResultRequest"/>.</param>
         /// <returns>HTTP 200 OK with processing results for each candidate.</returns>
         [HttpPost("bulk-resume-exam-result")]
-        public async Task<IActionResult> BulkResumeExamResult([FromBody] JToken request)
+        public async Task<IActionResult> BulkResumeExamResult([FromBody] List<BulkResumeExamResultRequest> requests)
         {
             try
             {
-                if (request == null)
+                if (requests == null || requests.Count == 0)
                 {
                     return BadRequest(new
                     {
                         Success = false,
-                        Message = "Request body is required."
+                        Message = "At least one candidate result is required."
                     });
-                }
-
-                List<BulkResumeExamResultRequest> requests;
-
-                // Support both single-object and JSON array payloads
-                if (request.Type == JTokenType.Array)
-                {
-                    requests = request.ToObject<List<BulkResumeExamResultRequest>>();
-                }
-                else
-                {
-                    requests = new List<BulkResumeExamResultRequest>
-                    {
-                        request.ToObject<BulkResumeExamResultRequest>()
-                    };
                 }
 
                 var results = new List<object>();
@@ -1753,9 +1797,6 @@ namespace ATS.API.Controllers
                 {
                     results.Add(await ProcessBulkResumeExamResult(item));
                 }
-
-                if (results.Count == 1)
-                    return Ok(results[0]);
 
                 return Ok(results);
             }
@@ -1797,9 +1838,7 @@ namespace ATS.API.Controllers
                  * 4. If neither record exists, return failure payload.
                  */
                 long candidateIdFromLms = request.CandidateId.GetValueOrDefault();
-                long tempCandidateId = request.TempCandidateId.GetValueOrDefault() > 0
-                    ? request.TempCandidateId.GetValueOrDefault()
-                    : candidateIdFromLms;
+                long tempCandidateId = request.TempCandidateId.GetValueOrDefault() > 0 ? request.TempCandidateId.GetValueOrDefault(): candidateIdFromLms;
                 decimal examMarksObtainScore = request.ExamMarksObtainScore;
                 bool isShortlisted = request.IsShortlisted;
 
@@ -1811,23 +1850,6 @@ namespace ATS.API.Controllers
                         Message = "Candidate id is required."
                     };
                 }
-
-                // Check if candidate exists in primary recruitment table
-                if (candidateIdFromLms > 0 && await _bulkResumeService.RecruitmentCandidateExistsAsync(candidateIdFromLms))
-                {
-                    await _bulkResumeService.SaveLmsExamResultToHeadAtsScoreAsync(candidateIdFromLms, examMarksObtainScore, isShortlisted);
-
-                    return new
-                    {
-                        Success = true,
-                        CandidateId = candidateIdFromLms,
-                        ExamMarksObtainScore = examMarksObtainScore,
-                        IsShortlisted = isShortlisted,
-                        UpdatedTable = "HEAD_ATS_SCORE",
-                        Message = "Exam result saved for existing recruitment candidate."
-                    };
-                }
-
                 // Check if temporary bulk candidate log exists
                 JObject tempCandidate = await _bulkResumeService.GetBulkResumeAtsScoreLogByIdAsync(tempCandidateId);
 
@@ -1848,6 +1870,23 @@ namespace ATS.API.Controllers
                         Message = "Exam result saved for temporary bulk resume candidate."
                     };
                 }
+                // Check if candidate exists in primary recruitment table
+                if (candidateIdFromLms > 0 && await _bulkResumeService.RecruitmentCandidateExistsAsync(candidateIdFromLms))
+                {
+                    await _bulkResumeService.SaveLmsExamResultToHeadAtsScoreAsync(candidateIdFromLms, examMarksObtainScore, isShortlisted);
+
+                    return new
+                    {
+                        Success = true,
+                        CandidateId = candidateIdFromLms,
+                        ExamMarksObtainScore = examMarksObtainScore,
+                        IsShortlisted = isShortlisted,
+                        UpdatedTable = "HEAD_ATS_SCORE",
+                        Message = "Exam result saved for existing recruitment candidate."
+                    };
+                }
+
+                
 
                 return new
                 {
@@ -2016,5 +2055,157 @@ namespace ATS.API.Controllers
                 await lmsExamLinkService.SendBulkResumeExamLinkAsync(mailRequest);
             });
         }
+
+
+        /// <summary>
+        /// Uploads up to 50 resumes scored against a directly uploaded/pasted Job Description and selected ATS configuration.
+        /// </summary>
+        [HttpPost("bulk-resume-custom-jd-upload")]
+        [Consumes("multipart/form-data")]
+        public async Task<IActionResult> BulkResumeCustomJdUpload([FromForm] BulkResumeCustomJdUploadRequest request)
+        {
+            int atsConfigId = request.AtsConfigId;
+            string? roleTitle = request.RoleTitle;
+            string? jdText = request.JdText;
+            IFormFile? jdFile = request.JdFile;
+            List<IFormFile> resumes = request.Resumes;
+            int locationId = request.LocationId;
+            int companyId = request.CompanyId;
+            int departmentId = request.DepartmentId;
+            try
+            {
+                if (atsConfigId <= 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Please select an ATS Configuration."
+                    });
+                }
+
+                if ((jdFile == null || jdFile.Length == 0) && string.IsNullOrWhiteSpace(jdText))
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Please upload a Job Description file or provide Job Description text."
+                    });
+                }
+
+                if (resumes == null || resumes.Count == 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        Message = "Please upload at least one resume."
+                    });
+                }
+
+                if (resumes.Count > 50)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        MaxAllowed = 50,
+                        UploadedCount = resumes.Count,
+                        Message = "Maximum 50 resumes are allowed in one bulk upload."
+                    });
+                }
+
+                // 1. Extract and structure the Job Description using the JD extraction prompt
+                ATSJobDescription jobDescription = await _bulkResumeService.ParseJobDescriptionFromTextOrFileAsync(jdText, jdFile, atsConfigId, roleTitle);
+                jobDescription.CompanyID = companyId;
+                jobDescription.DepartmentID = departmentId;
+                jobDescription.LocationID = locationId;
+
+                string uploadFolder = _bulkResumeService.GetUploadFolder();
+                var queuedFiles = new List<BulkResumeQueuedFile>();
+                var rejectedFiles = new List<object>();
+                var batchHashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (IFormFile resume in resumes.Where(x => x != null))
+                {
+                    if (resume.Length == 0)
+                    {
+                        rejectedFiles.Add(new
+                        {
+                            FileName = resume.FileName,
+                            Reason = "Empty resume file skipped."
+                        });
+                        continue;
+                    }
+
+                    string fileHash = await _bulkResumeService.ComputeFileHashAsync(resume);
+
+                    if (!string.IsNullOrWhiteSpace(fileHash) && batchHashes.Contains(fileHash))
+                    {
+                        rejectedFiles.Add(new
+                        {
+                            FileName = resume.FileName,
+                            Reason = "Duplicate CV upload skipped. Identical file found in the same bulk upload request."
+                        });
+                        continue;
+                    }
+
+                    batchHashes.Add(fileHash);
+
+                    (string savedFileName, string savedFilePath) = await _bulkResumeService.SaveResumeTempFileAsync(resume, uploadFolder);
+
+                    queuedFiles.Add(new BulkResumeQueuedFile
+                    {
+                        OriginalFileName = resume.FileName,
+                        SavedFileName = savedFileName,
+                        SavedFilePath = savedFilePath,
+                        FileHash = fileHash
+                    });
+                }
+
+                if (queuedFiles.Count == 0)
+                {
+                    return BadRequest(new
+                    {
+                        Success = false,
+                        TotalUploaded = resumes.Count,
+                        RejectedBeforeQueue = rejectedFiles,
+                        Message = "No valid resume files found for background processing."
+                    });
+                }
+
+                string batchId = Guid.NewGuid().ToString("N");
+
+                // 2. Queue background batch processing with custom JD and selected ATS rating model
+                await _backgroundTaskQueue.QueueBackgroundWorkItem(async token =>
+                {
+                    using var scope = _serviceScopeFactory.CreateScope();
+                    var bulkResumeService = scope.ServiceProvider.GetRequiredService<BulkResumeService>();
+                    await ProcessBulkResumeBatchAsync(batchId, bulkResumeService, 0, locationId, jobDescription, queuedFiles, token);
+                });
+
+                return Accepted(new
+                {
+                    Success = true,
+                    BatchId = batchId,
+                    PostId = 0,
+                    ATSHeadRatingID = atsConfigId,
+                    TotalUploaded = resumes.Count,
+                    AcceptedForBackgroundProcessing = queuedFiles.Count,
+                    RejectedBeforeQueue = rejectedFiles,
+                    message = "Bulk resume files accepted for custom JD. ATS processing is running in background."
+                });
+            }
+            catch (Exception ex)
+            {
+                string detailedMessage = ex.InnerException != null
+                    ? $"{ex.Message} Inner: {ex.InnerException.Message}"
+                    : ex.Message;
+
+                return StatusCode(500, new
+                {
+                    Success = false,
+                    Message = detailedMessage
+                });
+            }
+        }
+
     }
 }

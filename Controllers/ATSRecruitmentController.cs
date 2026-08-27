@@ -1,4 +1,4 @@
-﻿using ATS.API.Interface;
+using ATS.API.Interface;
 using ATS.API.Models;
 using CommonUtility.Interface;
 using Microsoft.AspNetCore.Http;
@@ -870,7 +870,7 @@ namespace ATS.API.Controllers
                 string evidenceSummary = BuildEvidenceSummary(candidateJson, extractedResumeText, compactJobText, breakDownArray);
 
                 string prompt = $@"
-You are an ATS scoring engine. Score only from supplied data.
+You are an objective ATS scoring engine. Score only from supplied data consistently and deterministically.
 
 CONFIG
 Total: {totalScore}
@@ -883,6 +883,7 @@ RULES
 - Candidate data is generic; do not depend on exact field names.
 - Combine relevant evidence from both sources, then compare with JOB_DESCRIPTION and CONFIG keywords.
 - Use semantic relevance; exact keyword match is not required.
+- Maintain consistent scoring: assign proportional marks based on match depth (Full match = 100%, Strong match = 75-85%, Partial match = 40-60%, Weak match = 20-30%, No match = 0).
 - If a configured category name/keyword indicates location, relocation, city, state, country, or address, then candidate city/state/country/address evidence is relevant. If exact relocation readiness is absent but location evidence exists, award appropriate partial marks instead of 0.
 - Do not invent missing facts. If sources conflict, use the most explicit relevant evidence.
 - Award partial marks for incomplete but relevant evidence.

@@ -23,6 +23,7 @@ namespace ATS.API.Models
         public string FileHash { get; set; } = string.Empty;
         public int AtsHeadRatingId { get; set; }
         public long? GeneratedCandidateId { get; set; }
+        public string RegistrationNo { get; set; } = string.Empty;
         public string Status { get; set; } = "LmsApplication";
         public bool IsShortlisted { get; set; }
         public bool IsDuplicate { get; set; }
@@ -59,4 +60,24 @@ namespace ATS.API.Models
         public string SavedFilePath { get; set; } = string.Empty;
         public string FileHash { get; set; } = string.Empty;
     }
+
+    public class BulkResumeUploadRequest
+    {
+        public int PostId { get; set; }
+        public List<IFormFile> Resumes { get; set; } = new List<IFormFile>();
+        public int LocationId { get; set; } = 0;
+    }
+
+    public class BulkResumeCustomJdUploadRequest
+    {
+        public int AtsConfigId { get; set; }
+        public string? RoleTitle { get; set; }
+        public string? JdText { get; set; }
+        public IFormFile? JdFile { get; set; }
+        public List<IFormFile> Resumes { get; set; } = new List<IFormFile>();
+        public int LocationId { get; set; } = 0;
+        public int CompanyId { get; set; } = 0;
+        public int DepartmentId { get; set; } = 0;
+    }
 }
+

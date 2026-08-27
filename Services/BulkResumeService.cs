@@ -147,7 +147,7 @@ namespace ATS.API.Services
             return await _helper.SendMessageAsync(prompt, _gptApi);
         }
 
-        public async Task<long?> SaveBulkResumeAtsScoreAsync(int postId, int companyId, int departmentId, string originalCvName, string savedCvName, string fileHash, string candidateName, string mailId, string phoneNumber, int atsHeadRatingId, long? generatedCandidateId, string status, bool isShortlisted, JObject scoreJson, JObject candidateJson, bool isDuplicate, long? duplicateOfLogId, string imageFileLocation = "", string imageName = "", long candidateId = 0, int locationId = 0)
+        public async Task<long?> SaveBulkResumeAtsScoreAsync(int postId, int companyId, int departmentId, string originalCvName, string savedCvName, string fileHash, string candidateName, string mailId, string phoneNumber, int atsHeadRatingId, long? generatedCandidateId, string status, bool isShortlisted, JObject scoreJson, JObject candidateJson, bool isDuplicate, long? duplicateOfLogId, string imageFileLocation = "", string imageName = "", long candidateId = 0, int locationId = 0, string registrationNo = "")
         {
             string resumeFileLocation = string.IsNullOrWhiteSpace(savedCvName)
                 ? string.Empty
@@ -171,6 +171,7 @@ namespace ATS.API.Services
                 { "@PHONE_NUMBER", phoneNumber ?? string.Empty },
                 { "@ATS_HEAD_RATING_ID", atsHeadRatingId == 0 ? DBNull.Value : atsHeadRatingId },
                 { "@GENERATED_CANDIDATE_ID", generatedCandidateId.HasValue && generatedCandidateId.Value > 0 ? generatedCandidateId.Value : DBNull.Value },
+                { "@REGISTRATION_NO", !string.IsNullOrWhiteSpace(registrationNo) ? (object)registrationNo.Trim() : DBNull.Value },
                 { "@ATS_STATUS", status ?? string.Empty },
                 { "@IS_SHORTLISTED", isShortlisted },
                 { "@FULL_JSON", scoreJson?.ToString(Formatting.None) ?? string.Empty },
@@ -301,7 +302,7 @@ namespace ATS.API.Services
             }
         }
 
-        public async Task UpdateCandidateIdBulkResumeAtsScoreLog(int postId, string fileHash, string candidateName, string mailId, string phoneNumber, long? generatedCandidateId)
+        public async Task UpdateCandidateIdBulkResumeAtsScoreLog(int postId, string fileHash, string candidateName, string mailId, string phoneNumber, long? generatedCandidateId, string registrationNo = "")
         {
             var parameters = new Dictionary<string, object>
             {
@@ -310,7 +311,8 @@ namespace ATS.API.Services
                 { "@CANDIDATE_NAME", candidateName ?? string.Empty },
                 { "@MAIL_ID", mailId ?? string.Empty },
                 { "@PHONE_NUMBER", phoneNumber ?? string.Empty },
-                { "@CANDIDATE_ID", generatedCandidateId.HasValue && generatedCandidateId.Value > 0 ? generatedCandidateId.Value : DBNull.Value }
+                { "@CANDIDATE_ID", generatedCandidateId.HasValue && generatedCandidateId.Value > 0 ? generatedCandidateId.Value : DBNull.Value },
+                { "@REGISTRATION_NO", !string.IsNullOrWhiteSpace(registrationNo) ? (object)registrationNo.Trim() : DBNull.Value }
             };
 
             await _dataService.AddAsync("PRC_UPDATE_BULK_RESUME_ATS_SCORE", parameters, _connectionString);
@@ -324,7 +326,8 @@ namespace ATS.API.Services
             var parameters = new Dictionary<string, object>
             {
                 { "@username", username ?? string.Empty },
-                { "@mailid", mailId ?? string.Empty }
+                { "@mailid", mailId ?? string.Empty },
+                { "@postId", postId > 0 ? (object)postId : DBNull.Value }
             };
 
             DataTable dt = await _dataService.GetDataAsync("PRC_CHECK_BULK_RESUME_CANDIDATE_EXISTS", parameters, _connectionString);
@@ -409,14 +412,15 @@ namespace ATS.API.Services
             return ConvertDataTableToDictionaryList(dt);
         }
 
-        public async Task UpdateBulkResumeExamResultAsync(long bulkResumeAtsScoreLogId, decimal examObtainedScore, bool examIsShortlisted, long? generatedCandidateId)
+        public async Task UpdateBulkResumeExamResultAsync(long bulkResumeAtsScoreLogId, decimal examObtainedScore, bool examIsShortlisted, long? generatedCandidateId, string registrationNo = "")
         {
             var parameters = new Dictionary<string, object>
             {
                 { "@BulkResumeAtsScoreLogID", bulkResumeAtsScoreLogId },
                 { "@EXAM_OBTAINED_SCORE", examObtainedScore },
                 { "@EXAM_IS_SHORTLISTED", examIsShortlisted },
-                { "@GENERATED_CANDIDATE_ID", generatedCandidateId.HasValue && generatedCandidateId.Value > 0 ? generatedCandidateId.Value : DBNull.Value }
+                { "@GENERATED_CANDIDATE_ID", generatedCandidateId.HasValue && generatedCandidateId.Value > 0 ? generatedCandidateId.Value : DBNull.Value },
+                { "@REGISTRATION_NO", !string.IsNullOrWhiteSpace(registrationNo) ? (object)registrationNo.Trim() : DBNull.Value }
             };
 
             await _dataService.AddAsync("PRC_UPDATE_BULK_RESUME_EXAM_RESULT", parameters, _connectionString);
@@ -431,37 +435,81 @@ namespace ATS.API.Services
             return dt.Rows.Count > 0;
         }
 
-        public async Task SaveLmsExamResultToHeadAtsScoreAsync(long candidateId, decimal examObtainedScore, bool examIsShortlisted)
+        public async Task SaveLmsExamResultToHeadAtsScoreAsync(long candidateId,decimal examObtainedScore,bool examIsShortlisted)
         {
-            /*
-             * Existing recruitment candidate flow:
-             * The real CandidateId is confirmed from trecruitcandidatesignup first.
-             * Candidate detail fields are used only to populate post/location/company
-             * metadata for HEAD_ATS_SCORE when they are available. LMS exam result
-             * uses its own save/update SP because it only touches HEAD_ATS_SCORE,
-             * not DTLS_ATS_SCORE breakdown rows.
-             */
-            DataTable signupCandidate = await GetRecruitmentCandidateSignupByIdAsync(candidateId);
+            // ============================================================
+            // 1. Basic validation
+            // ============================================================
+
+            if (candidateId <= 0)
+                throw new ArgumentException("Invalid candidate id.", nameof(candidateId));
+
+            if (examObtainedScore < 0 || examObtainedScore > 100)
+                throw new ArgumentException(
+                    "Exam obtained score must be between 0 and 100.",
+                    nameof(examObtainedScore));
+
+
+            // ============================================================
+            // 2. Validate candidate exists
+            // ============================================================
+
+            DataTable signupCandidate =
+                await GetRecruitmentCandidateSignupByIdAsync(candidateId);
 
             if (signupCandidate.Rows.Count == 0)
-                throw new Exception("Candidate id was not found in trecruitcandidatesignup.");
+                throw new Exception(
+                    "Candidate id was not found in trecruitcandidatesignup.");
+
+
+            // ============================================================
+            // 3. Get candidate details
+            // ============================================================
 
             int postId = 0;
             int locId = 0;
             int companyId = 0;
             int departmentId = 0;
-            DataTable candidateDetails = await GetRecruitmentCandidateDetailsAsync(candidateId);
+
+            DataTable candidateDetails =
+                await GetRecruitmentCandidateDetailsAsync(candidateId);
 
             if (candidateDetails.Rows.Count > 0)
             {
                 DataRow candidate = candidateDetails.Rows[0];
+
                 postId = GetIntValue(candidate, "ActualPostID");
                 locId = GetIntValue(candidate, "locId");
                 companyId = GetIntValue(candidate, "companyId");
                 departmentId = GetIntValue(candidate, "Departmentid");
             }
 
-            string examStatus = examIsShortlisted ? "Passed" : "Failed";
+
+            // ============================================================
+            // 4. Validate required ATS information
+            // ============================================================
+
+            if (postId <= 0)
+                throw new Exception(
+                    "Post information was not found for the candidate.");
+
+            if (companyId <= 0)
+                throw new Exception(
+                    "Company information was not found for the candidate.");
+
+
+            // ============================================================
+            // 5. Prepare exam status
+            // ============================================================
+
+            string examStatus = examIsShortlisted
+                ? "Passed"
+                : "Failed";
+
+
+            // ============================================================
+            // 6. Save LMS Exam Result
+            // ============================================================
 
             var insertParams = new Dictionary<string, object>
             {
@@ -474,7 +522,7 @@ namespace ATS.API.Services
                 { "@ExamStatus", examStatus }
             };
 
-            await _dataService.AddAsync("SP_SAVE_LMS_EXAM_RESULT_ATS_SCORE", insertParams, _connectionString);
+            await _dataService.AddAsync("SP_SAVE_LMS_EXAM_RESULT_ATS_SCORE",insertParams,_connectionString);
         }
 
         private async Task<DataTable> GetRecruitmentCandidateSignupByIdAsync(long candidateId)
@@ -834,7 +882,7 @@ namespace ATS.API.Services
                 string defaultStatus = resultStatusArray.FirstOrDefault()?.Key ?? "Shortlisted";
 
                 string prompt = $@"
-                You are an ATS scoring engine. Score the candidate against the job using only the supplied candidate JSON, resume text, JD, and scoring configuration.
+                You are an objective ATS scoring engine. Score the candidate consistently and deterministically against the job using only the supplied candidate JSON, resume text, JD, and scoring configuration.
 
                 CONFIG
                 Total: {totalScore}
@@ -847,6 +895,7 @@ namespace ATS.API.Services
                 - Evidence can come from candidate JSON or resume text. JD is only the requirement source.
                 - Candidate JSON fields are valid evidence. Use Qualification for education, AnyProject/projects for project/responsibility fit, LanguageKnown for language, Address/CityOrVillage/District/State/Country/PinCode for location, and any resume skills/experience text for skill/experience categories.
                 - For location categories, search both candidate JSON and resume text for city/state/country. If candidate location is present but relocation is not stated, award partial marks; if it matches the JD location, award high/full marks.
+                - Maintain consistent scoring: assign proportional marks based on match depth (Full match = 100%, Strong match = 75-85%, Partial match = 40-60%, Weak match = 20-30%, No match = 0).
                 - Be moderately flexible for equivalent/related evidence across any role type: qualification, experience, skills, projects, responsibilities, industry/domain, location, language, notice period, CTC, certifications, or other configured criteria.
                 - Award partial marks when evidence is relevant but incomplete. Do not make the whole category 0 because one requirement is missing.
                 - Use 0 only when no relevant candidate evidence exists for that category.
@@ -1050,7 +1099,7 @@ namespace ATS.API.Services
                 string fileHash = tempCandidate["FILE_HASH"]?.ToString() ?? string.Empty;
                 string phoneNumber = tempCandidate["PHONE_NUMBER"]?.ToString() ?? string.Empty;
 
-                await UpdateCandidateIdBulkResumeAtsScoreLog(postId, fileHash, candidateName, mailId, phoneNumber, candidateId.Value);
+                await UpdateCandidateIdBulkResumeAtsScoreLog(postId, fileHash, candidateName, mailId, phoneNumber, candidateId.Value, candidateId.Value.ToString());
 
                 result["Success"] = true;
                 result["CandidateId"] = candidateId.Value;
@@ -1521,10 +1570,7 @@ namespace ATS.API.Services
             scoreJson["percentage"] = percentage;
 
             string status = EvaluateStatusByRules(percentage, promptResult?.ResultStatusArray);
-            if (!string.IsNullOrWhiteSpace(status))
-            {
-                scoreJson["Status"] = status;
-            }
+            scoreJson["Status"] = NormalizeAtsStatus(status, IsAtsShortlisted(scoreJson));
 
             return scoreJson;
         }
@@ -1540,26 +1586,37 @@ namespace ATS.API.Services
                 if (ruleValue.StartsWith(">="))
                 {
                     if (decimal.TryParse(ruleValue.Substring(2), out decimal val) && percentage >= val)
-                        return rule.Key;
+                        return NormalizeAtsStatus(rule.Key);
                 }
                 else if (ruleValue.StartsWith(">"))
                 {
                     if (decimal.TryParse(ruleValue.Substring(1), out decimal val) && percentage > val)
-                        return rule.Key;
+                        return NormalizeAtsStatus(rule.Key);
                 }
                 else if (ruleValue.StartsWith("<="))
                 {
                     if (decimal.TryParse(ruleValue.Substring(2), out decimal val) && percentage <= val)
-                        return rule.Key;
+                        return NormalizeAtsStatus(rule.Key);
                 }
                 else if (ruleValue.StartsWith("<"))
                 {
                     if (decimal.TryParse(ruleValue.Substring(1), out decimal val) && percentage < val)
-                        return rule.Key;
+                        return NormalizeAtsStatus(rule.Key);
                 }
             }
 
-            return resultStatusArray.FirstOrDefault()?.Key ?? (percentage >= 50 ? "Shortlisted" : "Rejected");
+            return percentage >= 50 ? "Shortlisted" : "Rejected";
+        }
+
+        public static string NormalizeAtsStatus(string? status, bool isShortlisted = false)
+        {
+            if (string.Equals(status, "ExtractionFailed", StringComparison.OrdinalIgnoreCase))
+                return "ExtractionFailed";
+
+            if (isShortlisted || string.Equals(status, "Shortlisted", StringComparison.OrdinalIgnoreCase))
+                return "Shortlisted";
+
+            return "Rejected";
         }
 
         public bool IsAtsShortlisted(JObject scoreJson)
@@ -1920,7 +1977,126 @@ namespace ATS.API.Services
             }
         }
 
+        public async Task<ATSJobDescription> ParseJobDescriptionFromTextOrFileAsync(string? jdText, IFormFile? jdFile, int atsConfigId, string? roleTitle)
+        {
+            string rawText = jdText ?? string.Empty;
+
+            // 1. If JD File was uploaded, save temporarily and extract text like in ProcessJobProfile
+            if (jdFile != null && jdFile.Length > 0)
+            {
+                string tempDir = Path.Combine(Directory.GetCurrentDirectory(), "TempFiles");
+                if (!Directory.Exists(tempDir)) Directory.CreateDirectory(tempDir);
+                string tempFilePath = Path.Combine(tempDir, $"{Guid.NewGuid():N}_{Path.GetFileName(jdFile.FileName)}");
+
+                try
+                {
+                    await using (var stream = new FileStream(tempFilePath, FileMode.Create))
+                    {
+                        await jdFile.CopyToAsync(stream);
+                    }
+
+                    string fileExtractedText = await ExtractResumeTextAsync(tempFilePath);
+                    if (!string.IsNullOrWhiteSpace(fileExtractedText))
+                    {
+                        rawText = fileExtractedText;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error extracting text from JD file: {ex.Message}");
+                }
+                finally
+                {
+                    if (File.Exists(tempFilePath))
+                    {
+                        try { File.Delete(tempFilePath); } catch { }
+                    }
+                }
+            }
+
+            // 2. Initialize default ATSJobDescription
+            ATSJobDescription jobDesc = new ATSJobDescription
+            {
+                PostID = 0,
+                POST = !string.IsNullOrWhiteSpace(roleTitle) ? roleTitle.Trim() : "Custom JD Position",
+                JobTitle = !string.IsNullOrWhiteSpace(roleTitle) ? roleTitle.Trim() : "Custom JD Position",
+                JobDescription = rawText,
+                ATS_HEAD_RATING_ID = atsConfigId
+            };
+
+            // 3. Structure the extracted JD using AI prompt (like ProcessJobPrompt / ProcessJobProfile)
+            if (!string.IsNullOrWhiteSpace(rawText))
+            {
+                try
+                {
+                    // Prompt template for JD parsing
+                    string jdPrompt = $@"You are an intelligent data extraction assistant.
+                        Extract and enrich the following fields from the given job description:
+                        Job Description Text:
+                        """"""
+                        {rawText}
+                        """"""
+                        Return output ONLY as JSON:
+                        {{
+                          ""JobTitle"": """",
+                          ""Objectives"": """",
+                          ""Qualifications"": """",
+                          ""Experience"": """",
+                          ""Age"": """",
+                          ""Jobresponsibility"": """",
+                          ""TechnicalScope"": """",
+                          ""AdministrativeScope"": """",
+                          ""Skills"": """",
+                          ""Compensate"": """",
+                          ""Location"": """",
+                          ""Others"": """"
+                        }}";
+
+                    string gptResponse = await SendGptMessageAsync(jdPrompt);
+                    if (!string.IsNullOrWhiteSpace(gptResponse))
+                    {
+                        JObject parsed = CleanAndParseJson(gptResponse);
+                        string parsedTitle = parsed["JobTitle"]?.ToString() ?? parsed["Job Title"]?.ToString() ?? parsed["Position"]?.ToString();
+
+                        if (!string.IsNullOrWhiteSpace(roleTitle))
+                        {
+                            jobDesc.JobTitle = roleTitle.Trim();
+                            jobDesc.POST = roleTitle.Trim();
+                        }
+                        else if (!string.IsNullOrWhiteSpace(parsedTitle))
+                        {
+                            jobDesc.JobTitle = parsedTitle.Trim();
+                            jobDesc.POST = parsedTitle.Trim();
+                        }
+
+                        jobDesc.Objectives = parsed["Objectives"]?.ToString() ?? parsed["Objective"]?.ToString();
+                        jobDesc.JobDescription = parsed["JobDescription"]?.ToString() ?? parsed["Job Description"]?.ToString() ?? rawText;
+                        jobDesc.Qualifications = parsed["Qualifications"]?.ToString() ?? parsed["Qualification"]?.ToString() ?? parsed["Education"]?.ToString();
+                        jobDesc.RequiredSkill = parsed["Skills"]?.ToString() ?? parsed["RequiredSkill"]?.ToString() ?? parsed["RequiredSkills"]?.ToString();
+                        jobDesc.JobResponsibility = parsed["Jobresponsibility"]?.ToString() ?? parsed["JobResponsibility"]?.ToString() ?? parsed["Responsibilities"]?.ToString();
+                        jobDesc.Experience = parsed["Experience"]?.ToString() ?? parsed["TotalExperience"]?.ToString();
+                        jobDesc.Location = parsed["Location"]?.ToString();
+                        jobDesc.Age = parsed["Age"]?.ToString();
+                        jobDesc.TechnicalScope = parsed["TechnicalScope"]?.ToString();
+                        jobDesc.AdministrativeScope = parsed["AdministrativeScope"]?.ToString();
+                        jobDesc.Compensate = parsed["Compensate"]?.ToString();
+                        jobDesc.Others = parsed["Others"]?.ToString();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error parsing structured JD: {ex.Message}");
+                    jobDesc.JobDescription = rawText;
+                }
+            }
+
+            return jobDesc;
+        }
+
+
+
     }
+
 
     public class ResumeSecurityScanResult
     {

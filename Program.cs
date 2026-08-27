@@ -90,15 +90,15 @@ builder.Services.AddScoped<FtpStorageService>();
 builder.Services.AddScoped<FileMigrationService>();
 builder.Services.AddHostedService<FileMigrationBackgroundService>();
 
-// Hosted Services
-//builder.Services.AddHostedService<ETimeTrackCollectorService>();
-//builder.Services.AddHostedService<RawPunchFallbackService>();
-//builder.Services.AddHostedService<MidnightAttendanceService>();
+// Attendance Hosted Services
+builder.Services.AddHostedService<ETimeTrackCollectorService>();
+builder.Services.AddHostedService<RawPunchFallbackService>();
+builder.Services.AddHostedService<MidnightAttendanceService>();
 
 // Bind Attendance Job Settings
-//builder.Services.Configure<AttendanceJobSettings>(
-//    builder.Configuration.GetSection("AttendanceJobs")
-//);
+builder.Services.Configure<AttendanceJobSettings>(
+    builder.Configuration.GetSection("AttendanceJobs")
+);
 
 // Common Services
 builder.Services.AddScoped<ICommonService, CommonServiceRepository>();

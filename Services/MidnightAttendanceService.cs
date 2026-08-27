@@ -1,48 +1,92 @@
-﻿using ATS.API.Interface;
+using ATS.API.Interface;
 using ATS.API.Repository;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 
-public class MidnightAttendanceService : BackgroundService
+namespace ATS.API.Services
 {
-    private readonly IServiceScopeFactory _scopeFactory;
-    private readonly IConfiguration _config;
-
-    public MidnightAttendanceService(
-        IServiceScopeFactory scopeFactory,
-        IConfiguration config)
+    public class MidnightAttendanceService : BackgroundService
     {
-        _scopeFactory = scopeFactory;
-        _config = config;
-    }
+        private readonly IServiceScopeFactory _scopeFactory;
+        private readonly IConfiguration _config;
+        private readonly ILogger<MidnightAttendanceService> _logger;
 
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        string timeStr = _config["AttendanceJobs:MidnightInitTime"] ?? "00:30";
-
-        int batchSize = int.Parse(_config["AttendanceJobs:EmployeeBatchSize"] ?? "500");
-        int tenantWorkers = int.Parse(_config["AttendanceJobs:TenantParallelWorkers"] ?? "5");
-
-        TimeSpan scheduled = TimeSpan.Parse(timeStr);
-
-        while (!stoppingToken.IsCancellationRequested)
+        public MidnightAttendanceService(
+            IServiceScopeFactory scopeFactory,
+            IConfiguration config,
+            ILogger<MidnightAttendanceService> logger)
         {
-            DateTime now = DateTime.Now;
-            DateTime nextRun = DateTime.Today.Add(scheduled);
+            _scopeFactory = scopeFactory;
+            _config = config;
+            _logger = logger;
+        }
 
-            if (now > nextRun)
-                nextRun = nextRun.AddDays(1);
+        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        {
+            _logger.LogInformation("Midnight Attendance background service started.");
 
-            TimeSpan delay = nextRun - now;
+            // Yield thread so ASP.NET Web API / Kestrel starts and binds ports immediately
+            await Task.Yield();
 
-            await Task.Delay(delay, stoppingToken);
+            string timeStr = _config["AttendanceJobs:MidnightInitTime"] ?? "00:30";
 
-            // ✅ Create scope
-            using var scope = _scopeFactory.CreateScope();
+            if (!int.TryParse(_config["AttendanceJobs:EmployeeBatchSize"], out int batchSize) || batchSize <= 0)
+            {
+                batchSize = 500;
+            }
 
-            var repo = scope.ServiceProvider
-                .GetRequiredService<IETimeTrackRepository>();
+            if (!int.TryParse(_config["AttendanceJobs:TenantParallelWorkers"], out int tenantWorkers) || tenantWorkers <= 0)
+            {
+                tenantWorkers = 5;
+            }
 
-            await repo.CreateDailyAttendanceForAllTenants(batchSize,tenantWorkers,stoppingToken);
+            if (!TimeSpan.TryParse(timeStr, out TimeSpan scheduled))
+            {
+                scheduled = new TimeSpan(0, 30, 0);
+            }
+
+            _logger.LogInformation("Midnight Attendance Service scheduled to run daily at {ScheduledTime}", scheduled);
+
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                try
+                {
+                    DateTime now = DateTime.Now;
+                    DateTime nextRun = DateTime.Today.Add(scheduled);
+
+                    if (now >= nextRun)
+                    {
+                        nextRun = nextRun.AddDays(1);
+                    }
+
+                    TimeSpan delay = nextRun - now;
+                    _logger.LogInformation("Next midnight attendance run scheduled at {NextRun} (waiting {Delay})", nextRun, delay);
+
+                    await Task.Delay(delay, stoppingToken);
+
+                    if (stoppingToken.IsCancellationRequested)
+                        break;
+
+                    _logger.LogInformation("Starting daily attendance initialization for all active tenants...");
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var repo = scope.ServiceProvider.GetRequiredService<IETimeTrackRepository>();
+
+                    await repo.CreateDailyAttendanceForAllTenants(batchSize, tenantWorkers, stoppingToken);
+
+                    _logger.LogInformation("Completed daily attendance initialization for all active tenants.");
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error in Midnight Attendance background service");
+                    // Delay a brief moment before retrying calculation next time
+                    await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken);
+                }
+            }
         }
     }
 }

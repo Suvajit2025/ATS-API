@@ -27,6 +27,7 @@ CREATE TABLE [dbo].[BulkResumeAtsScoreLog](
 	[PHONE_NUMBER] [nvarchar](50) NULL,
 	[ATS_HEAD_RATING_ID] [int] NULL,
 	[GENERATED_CANDIDATE_ID] [bigint] NULL,
+	[REGISTRATION_NO] [nvarchar](50) NULL,
 	[EXAM_OBTAINED_SCORE] [decimal](18, 2) NULL,
 	[EXAM_IS_SHORTLISTED] [bit] NULL,
 	[EXAM_RESULT_DATE] [datetime] NULL,
@@ -43,6 +44,11 @@ CREATE TABLE [dbo].[BulkResumeAtsScoreLog](
 )WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON, OPTIMIZE_FOR_SEQUENTIAL_KEY = OFF) ON [PRIMARY]
 ) ON [PRIMARY] TEXTIMAGE_ON [PRIMARY]
 END
+GO
+
+IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'REGISTRATION_NO') IS NULL
+    ALTER TABLE [dbo].[BulkResumeAtsScoreLog]
+    ADD [REGISTRATION_NO] [nvarchar](50) NULL;
 GO
 
 IF COL_LENGTH('dbo.BulkResumeAtsScoreLog', 'LOCATION_ID') IS NULL
@@ -91,6 +97,7 @@ BEGIN
         LOCATION_ID,
         ATS_HEAD_RATING_ID,
         GENERATED_CANDIDATE_ID,
+        REGISTRATION_NO,
         EXAM_OBTAINED_SCORE,
         EXAM_IS_SHORTLISTED,
         EXAM_RESULT_DATE,
@@ -206,6 +213,7 @@ CREATE OR ALTER PROCEDURE dbo.PRC_SAVE_BULK_RESUME_ATS_SCORE
     @LOCATION_ID INT = NULL,
     @ATS_HEAD_RATING_ID INT = NULL,
     @GENERATED_CANDIDATE_ID BIGINT = NULL,
+    @REGISTRATION_NO NVARCHAR(50) = NULL,
     @ATS_STATUS NVARCHAR(100) = NULL,
     @IS_SHORTLISTED BIT = 0,
     @FULL_JSON NVARCHAR(MAX) = NULL,
@@ -217,6 +225,26 @@ BEGIN
     SET NOCOUNT ON;
 
     IF @GENERATED_CANDIDATE_ID = 0 SET @GENERATED_CANDIDATE_ID = NULL;
+
+    IF (@REGISTRATION_NO IS NULL OR LTRIM(RTRIM(@REGISTRATION_NO)) = '')
+        SET @REGISTRATION_NO = 'Not Generated';
+
+    -- Enforce only 3 valid ATS_STATUS values: 'Shortlisted', 'Rejected', 'ExtractionFailed'
+    IF (UPPER(LTRIM(RTRIM(ISNULL(@ATS_STATUS, '')))) = 'EXTRACTIONFAILED')
+    BEGIN
+        SET @ATS_STATUS = 'ExtractionFailed';
+        SET @IS_SHORTLISTED = 0;
+    END
+    ELSE IF (UPPER(LTRIM(RTRIM(ISNULL(@ATS_STATUS, '')))) = 'SHORTLISTED' OR @IS_SHORTLISTED = 1)
+    BEGIN
+        SET @ATS_STATUS = 'Shortlisted';
+        SET @IS_SHORTLISTED = 1;
+    END
+    ELSE
+    BEGIN
+        SET @ATS_STATUS = 'Rejected';
+        SET @IS_SHORTLISTED = 0;
+    END
 
     -- If BulkResumeAtsScoreLogID is passed and > 0, update existing record
     IF (@BulkResumeAtsScoreLogID IS NOT NULL AND @BulkResumeAtsScoreLogID > 0 AND EXISTS (SELECT 1 FROM dbo.BulkResumeAtsScoreLog WHERE BulkResumeAtsScoreLogID = @BulkResumeAtsScoreLogID))
@@ -238,8 +266,9 @@ BEGIN
             LOCATION_ID = COALESCE(@LOCATION_ID, LOCATION_ID),
             ATS_HEAD_RATING_ID = COALESCE(@ATS_HEAD_RATING_ID, ATS_HEAD_RATING_ID),
             GENERATED_CANDIDATE_ID = NULLIF(COALESCE(@GENERATED_CANDIDATE_ID, GENERATED_CANDIDATE_ID), 0),
-            ATS_STATUS = COALESCE(NULLIF(LTRIM(RTRIM(@ATS_STATUS)), ''), ATS_STATUS),
-            IS_SHORTLISTED = COALESCE(@IS_SHORTLISTED, IS_SHORTLISTED),
+            REGISTRATION_NO = COALESCE(NULLIF(LTRIM(RTRIM(@REGISTRATION_NO)), ''), REGISTRATION_NO),
+            ATS_STATUS = @ATS_STATUS,
+            IS_SHORTLISTED = @IS_SHORTLISTED,
             IS_DUPLICATE = COALESCE(@IS_DUPLICATE, IS_DUPLICATE),
             DUPLICATE_OF_LOG_ID = @DUPLICATE_OF_LOG_ID,
             FULL_JSON = COALESCE(NULLIF(LTRIM(RTRIM(@FULL_JSON)), ''), FULL_JSON),
@@ -251,13 +280,13 @@ BEGIN
     END
 
     -- Automatic Race-Condition Protection:
-    -- If @IS_DUPLICATE is 0 but an existing log row for the same POST_ID and (FILE_HASH or MAIL_ID) already exists in BulkResumeAtsScoreLog,
+    -- If @IS_DUPLICATE is 0 but an existing log row for the same POST_ID and FILE_HASH already exists in BulkResumeAtsScoreLog,
     -- automatically treat this incoming row as a Duplicate!
     IF (@IS_DUPLICATE = 0)
     BEGIN
         DECLARE @ExistingLogID BIGINT = NULL;
 
-        -- 1. Check duplicate by FILE_HASH
+        -- Check duplicate by FILE_HASH (post and location wise)
         IF (@FILE_HASH IS NOT NULL AND LEN(LTRIM(RTRIM(@FILE_HASH))) > 0)
         BEGIN
             SELECT TOP 1 @ExistingLogID = BulkResumeAtsScoreLogID
@@ -269,26 +298,10 @@ BEGIN
             ORDER BY BulkResumeAtsScoreLogID ASC;
         END
 
-        -- 2. Check duplicate by MAIL_ID for the same post
-        IF (@ExistingLogID IS NULL AND @MAIL_ID IS NOT NULL AND LEN(LTRIM(RTRIM(@MAIL_ID))) > 0)
-        BEGIN
-            SELECT TOP 1 @ExistingLogID = BulkResumeAtsScoreLogID
-            FROM dbo.BulkResumeAtsScoreLog WITH (UPDLOCK, HOLDLOCK)
-            WHERE POST_ID = @POST_ID
-              AND (ISNULL(@LOCATION_ID, 0) = 0 OR LOCATION_ID = @LOCATION_ID)
-              AND LTRIM(RTRIM(MAIL_ID)) = LTRIM(RTRIM(@MAIL_ID))
-              AND IS_DUPLICATE = 0
-            ORDER BY BulkResumeAtsScoreLogID ASC;
-        END
-
         IF (@ExistingLogID IS NOT NULL)
         BEGIN
             SET @IS_DUPLICATE = 1;
             SET @DUPLICATE_OF_LOG_ID = @ExistingLogID;
-            IF (@ATS_STATUS IS NULL OR @ATS_STATUS = '' OR @ATS_STATUS = 'Submitted')
-            BEGIN
-                SET @ATS_STATUS = 'Duplicate';
-            END
         END
     END
 
@@ -309,6 +322,7 @@ BEGIN
         LOCATION_ID,
         ATS_HEAD_RATING_ID,
         GENERATED_CANDIDATE_ID,
+        REGISTRATION_NO,
         ATS_STATUS,
         IS_SHORTLISTED,
         IS_DUPLICATE,
@@ -334,6 +348,7 @@ BEGIN
         ISNULL(@LOCATION_ID, 0),
         @ATS_HEAD_RATING_ID,
         @GENERATED_CANDIDATE_ID,
+        @REGISTRATION_NO,
         @ATS_STATUS,
         @IS_SHORTLISTED,
         @IS_DUPLICATE,
@@ -370,6 +385,7 @@ BEGIN
         LOCATION_ID,
         ATS_HEAD_RATING_ID,
         GENERATED_CANDIDATE_ID,
+        REGISTRATION_NO,
         ATS_STATUS,
         IS_SHORTLISTED,
         IS_DUPLICATE,
@@ -391,7 +407,8 @@ CREATE OR ALTER PROCEDURE dbo.PRC_UPDATE_BULK_RESUME_ATS_SCORE
     @CANDIDATE_NAME NVARCHAR(500) = NULL,
     @MAIL_ID NVARCHAR(500) = NULL,
     @PHONE_NUMBER NVARCHAR(50) = NULL,
-    @CANDIDATE_ID BIGINT = NULL
+    @CANDIDATE_ID BIGINT = NULL,
+    @REGISTRATION_NO NVARCHAR(50) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -403,7 +420,8 @@ BEGIN
         CANDIDATE_NAME = COALESCE(NULLIF(LTRIM(RTRIM(@CANDIDATE_NAME)), ''), CANDIDATE_NAME),
         MAIL_ID = COALESCE(NULLIF(LTRIM(RTRIM(@MAIL_ID)), ''), MAIL_ID),
         PHONE_NUMBER = COALESCE(NULLIF(LTRIM(RTRIM(@PHONE_NUMBER)), ''), PHONE_NUMBER),
-        GENERATED_CANDIDATE_ID = NULLIF(COALESCE(@CANDIDATE_ID, GENERATED_CANDIDATE_ID), 0)
+        GENERATED_CANDIDATE_ID = NULLIF(COALESCE(@CANDIDATE_ID, GENERATED_CANDIDATE_ID), 0),
+        REGISTRATION_NO = COALESCE(NULLIF(LTRIM(RTRIM(@REGISTRATION_NO)), ''), REGISTRATION_NO)
     WHERE POST_ID = @POST_ID
       AND FILE_HASH = @FILE_HASH
       AND IS_DUPLICATE = 0;
@@ -414,7 +432,8 @@ CREATE OR ALTER PROCEDURE dbo.PRC_UPDATE_BULK_RESUME_EXAM_RESULT
     @BulkResumeAtsScoreLogID BIGINT,
     @EXAM_OBTAINED_SCORE DECIMAL(18,2) = NULL,
     @EXAM_IS_SHORTLISTED BIT = NULL,
-    @GENERATED_CANDIDATE_ID BIGINT = NULL
+    @GENERATED_CANDIDATE_ID BIGINT = NULL,
+    @REGISTRATION_NO NVARCHAR(50) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -426,7 +445,8 @@ BEGIN
         EXAM_OBTAINED_SCORE = @EXAM_OBTAINED_SCORE,
         EXAM_IS_SHORTLISTED = @EXAM_IS_SHORTLISTED,
         EXAM_RESULT_DATE = GETDATE(),
-        GENERATED_CANDIDATE_ID = NULLIF(COALESCE(@GENERATED_CANDIDATE_ID, GENERATED_CANDIDATE_ID), 0)
+        GENERATED_CANDIDATE_ID = NULLIF(COALESCE(@GENERATED_CANDIDATE_ID, GENERATED_CANDIDATE_ID), 0),
+        REGISTRATION_NO = COALESCE(NULLIF(LTRIM(RTRIM(@REGISTRATION_NO)), ''), REGISTRATION_NO)
     WHERE BulkResumeAtsScoreLogID = @BulkResumeAtsScoreLogID;
 END
 GO
@@ -474,7 +494,9 @@ BEGIN
         L.POST_ID AS JD_POST_ID,
         P.postname AS POST_NAME,
         P.postname AS POST,
-        L.GENERATED_CANDIDATE_ID,
+        COALESCE(L.GENERATED_CANDIDATE_ID, TS.CandidateID) AS GENERATED_CANDIDATE_ID,
+        COALESCE(NULLIF(LTRIM(RTRIM(L.REGISTRATION_NO)), ''), NULLIF(LTRIM(RTRIM(TC.registrationnumber)), ''), 'Not Generated') AS REGISTRATION_NO,
+        COALESCE(NULLIF(LTRIM(RTRIM(L.REGISTRATION_NO)), ''), NULLIF(LTRIM(RTRIM(TC.registrationnumber)), ''), 'Not Generated') AS RegistrationNo,
         L.EXAM_OBTAINED_SCORE,
         L.EXAM_IS_SHORTLISTED,
         L.EXAM_RESULT_DATE,
@@ -488,7 +510,7 @@ BEGIN
             ELSE NULL
         END AS BATCH_ID,
         CASE
-            WHEN L.GENERATED_CANDIDATE_ID IS NOT NULL THEN 'Created'
+            WHEN COALESCE(L.GENERATED_CANDIDATE_ID, TS.CandidateID) IS NOT NULL THEN 'Created'
             WHEN L.EXAM_IS_SHORTLISTED = 1 THEN 'Passed'
             WHEN L.EXAM_IS_SHORTLISTED = 0 THEN 'Failed'
             ELSE 'Pending'
@@ -510,6 +532,11 @@ BEGIN
         ON P.postid = L.POST_ID
     LEFT JOIN dbo.Company C
         ON C.companyPK = L.COMPANY_ID
+    LEFT JOIN dbo.trecruitcandidatesignup TS
+        ON (L.GENERATED_CANDIDATE_ID IS NOT NULL AND TS.CandidateID = L.GENERATED_CANDIDATE_ID)
+        OR (NULLIF(LTRIM(RTRIM(L.MAIL_ID)), '') IS NOT NULL AND TS.mailid = LTRIM(RTRIM(L.MAIL_ID)))
+    LEFT JOIN dbo.trecruitcanbasicdtls TC
+        ON TC.candidateid = COALESCE(L.GENERATED_CANDIDATE_ID, TS.CandidateID)
     WHERE
         (
             @COMPANY_ID IS NULL
@@ -531,6 +558,8 @@ BEGIN
             OR L.PHONE_NUMBER LIKE '%' + @KEYWORD + '%'
             OR L.CV_NAME LIKE '%' + @KEYWORD + '%'
             OR P.postname LIKE '%' + @KEYWORD + '%'
+            OR L.REGISTRATION_NO LIKE '%' + @KEYWORD + '%'
+            OR TC.registrationnumber LIKE '%' + @KEYWORD + '%'
         )
         AND (@FROM_DATE IS NULL OR L.CREATED_DATE >= @FROM_DATE)
         AND (@TO_DATE IS NULL OR L.CREATED_DATE < DATEADD(DAY, 1, @TO_DATE))
@@ -546,27 +575,38 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    IF (@mailid IS NULL OR LTRIM(RTRIM(@mailid)) = '')
+    IF ((@mailid IS NULL OR LTRIM(RTRIM(@mailid)) = '') AND (@username IS NULL OR LTRIM(RTRIM(@username)) = ''))
     BEGIN
-        SELECT TOP 0 CAST(NULL AS NVARCHAR(500)) AS username, CAST(NULL AS NVARCHAR(500)) AS mailid, CAST(NULL AS BIGINT) AS BulkResumeAtsScoreLogID;
+        SELECT TOP 0 
+            CAST(NULL AS NVARCHAR(500)) AS username, 
+            CAST(NULL AS NVARCHAR(500)) AS mailid, 
+            CAST(NULL AS BIGINT) AS CandidateID,
+            CAST(NULL AS NVARCHAR(50)) AS RegistrationNo,
+            CAST(NULL AS BIGINT) AS BulkResumeAtsScoreLogID,
+            CAST(NULL AS NVARCHAR(100)) AS SourceType;
         RETURN;
     END
 
     -- 1. Check in trecruitcandidatesignup (registered candidates)
     IF EXISTS (
-        SELECT 1 FROM trecruitcandidatesignup
-        WHERE NULLIF(LTRIM(RTRIM(mailid)), '') = LTRIM(RTRIM(@mailid))
-           OR (NULLIF(LTRIM(RTRIM(@username)), '') IS NOT NULL AND username = LTRIM(RTRIM(@username)))
+        SELECT 1 
+        FROM trecruitcandidatesignup TS 
+        LEFT JOIN trecruitcanbasicdtls TC ON TC.candidateid = TS.CandidateID
+        WHERE (NULLIF(LTRIM(RTRIM(@mailid)), '') IS NOT NULL AND TS.mailid = LTRIM(RTRIM(@mailid)))
+           OR (NULLIF(LTRIM(RTRIM(@username)), '') IS NOT NULL AND TS.username = LTRIM(RTRIM(@username)))
     )
     BEGIN
         SELECT TOP 1
-            username,
-            mailid,
+            TS.CandidateID,
+            COALESCE(NULLIF(LTRIM(RTRIM(TC.registrationnumber)), ''), 'Not Generated') AS RegistrationNo,
+            TS.username,
+            TS.mailid,
             CAST(NULL AS BIGINT) AS BulkResumeAtsScoreLogID,
             'RegisteredCandidate' AS SourceType
-        FROM trecruitcandidatesignup
-        WHERE NULLIF(LTRIM(RTRIM(mailid)), '') = LTRIM(RTRIM(@mailid))
-           OR (NULLIF(LTRIM(RTRIM(@username)), '') IS NOT NULL AND username = LTRIM(RTRIM(@username)));
+        FROM trecruitcandidatesignup TS
+        LEFT JOIN trecruitcanbasicdtls TC ON TC.candidateid = TS.CandidateID
+        WHERE (NULLIF(LTRIM(RTRIM(@mailid)), '') IS NOT NULL AND TS.mailid = LTRIM(RTRIM(@mailid)))
+           OR (NULLIF(LTRIM(RTRIM(@username)), '') IS NOT NULL AND TS.username = LTRIM(RTRIM(@username)));
         RETURN;
     END
 
@@ -581,6 +621,8 @@ BEGIN
         )
         BEGIN
             SELECT TOP 1
+                GENERATED_CANDIDATE_ID AS CandidateID,
+                COALESCE(NULLIF(LTRIM(RTRIM(REGISTRATION_NO)), ''), 'Not Generated') AS RegistrationNo,
                 MAIL_ID AS username,
                 MAIL_ID AS mailid,
                 BulkResumeAtsScoreLogID,
@@ -588,7 +630,7 @@ BEGIN
             FROM dbo.BulkResumeAtsScoreLog
             WHERE POST_ID = @postId
               AND NULLIF(LTRIM(RTRIM(MAIL_ID)), '') = LTRIM(RTRIM(@mailid))
-              AND IS_DUPLICATE = 0
+              --AND IS_DUPLICATE = 0
             ORDER BY BulkResumeAtsScoreLogID ASC;
             RETURN;
         END
