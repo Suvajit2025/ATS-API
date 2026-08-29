@@ -11,17 +11,17 @@ using Microsoft.EntityFrameworkCore;
  
 var builder = WebApplication.CreateBuilder(args);
 
-// Explicitly load configuration from appsettings.json
+// Explicitly load configuration from appsettings.json using AppContext.BaseDirectory (fixes IIS System32\inetsrv issue)
 builder.Configuration
-    .SetBasePath(Directory.GetCurrentDirectory())
-    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+    .SetBasePath(AppContext.BaseDirectory)
+    .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true)
     .AddEnvironmentVariables();
- // ------------------------
-// Controllers
+
+// Controllers & Web Services
 builder.Services.AddControllers();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient();
 
@@ -34,6 +34,7 @@ if (maxConcurrency <= 0)
 
 // ATS Services
 builder.Services.AddScoped<IATSHelper, ATSHelperRepo>();
+builder.Services.AddScoped<IPsychometricRepository, PsychometricRepository>();
 builder.Services.AddScoped<BulkResumeService>();
 
 builder.Services.AddScoped<ICandidateProcessor>(provider =>
@@ -113,22 +114,12 @@ builder.Services.AddSingleton<IBackgroundTaskQueue>(provider =>
 
 builder.Services.AddHostedService<BackgroundTaskProcessorService>();
 
-// CORS
+// CORS - Allow All
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowFrontend", policy =>
     {
-        policy.SetIsOriginAllowed(origin =>
-              {
-                  if (string.IsNullOrWhiteSpace(origin))
-                      return false;
-
-                  var host = new Uri(origin).Host;
-                  return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
-                      || host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase)
-                      || host.Equals("recruitment.mendine.co.in", StringComparison.OrdinalIgnoreCase)
-                      || host.Equals("recruitmentsaas.mendine.co.in", StringComparison.OrdinalIgnoreCase);
-              })
+        policy.AllowAnyOrigin()
               .AllowAnyHeader()
               .AllowAnyMethod();
     });

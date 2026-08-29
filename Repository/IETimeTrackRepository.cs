@@ -1,11 +1,11 @@
-﻿using System.Data;
+using System.Data;
 
 namespace ATS.API.Repository
 {
     public interface IETimeTrackRepository
     {
         Task<DataTable> GetETimeTrackTenantsAsync();
-        Task<DataTable> GetDeviceLogsAsync(Guid tenantId, int offset, int batchSize);
+        Task<DataTable> GetDeviceLogsAsync(Guid tenantId, int offset, int batchSize, int? month = null, int? year = null);
         Task<long> InsertRawPunchAsync(string SN,string employeeId,DateTime punchTime,string rawPayload,string punchState,String DeviceType); 
         Task UpdateLastSyncAsync(Guid tenantId, DateTime lastSyncTime);
         Task<DataTable> BulkInsertRawPunchAsync(DataTable table);

@@ -65,82 +65,95 @@ namespace ATS.API.Services
             if (tenants == null || tenants.Rows.Count == 0)
                 return;
 
+            // Always sync current month + previous month (covers month-boundary punch gaps)
+            var today = DateTime.Today;
+             
+            var monthsToSync = Enumerable.Range(0, 3) //For find Last # month Gap , we need to sync 3 months instead of 2 months.
+                .Select(i =>
+                {
+                    var date = today.AddMonths(-i);
+                    return (Month: date.Month, Year: date.Year);
+                })
+                .ToArray();
             foreach (DataRow row in tenants.Rows)
             {
                 try
                 {
-                    Guid tenantId = Guid.Parse(row["TenantId"].ToString());
-
-                    int batchSize = 1000;
-                    int offset = 0;
+                    Guid tenantId = Guid.Parse(row["TenantId"].ToString()!);
                     DateTime latestTime = DateTime.MinValue;
 
-                    while (true)
+                    foreach (var (month, year) in monthsToSync)
                     {
-                        var logs = await repo.GetDeviceLogsAsync(
-                            tenantId,
-                            offset,
-                            batchSize);
+                        _logger.LogInformation("Syncing eTimeTrack logs for Tenant {TenantId} - {Month}/{Year}", tenantId, month, year);
 
-                        if (logs == null || logs.Rows.Count == 0)
-                            break;
+                        int batchSize = 1000;
+                        int offset = 0;
 
-                        // TVP DataTable
-                        var table = new DataTable();
-                        table.Columns.Add("SN", typeof(string));
-                        table.Columns.Add("EmployeeId", typeof(string));
-                        table.Columns.Add("PunchTime", typeof(DateTime));
-                        table.Columns.Add("RawPayload", typeof(string));
-                        table.Columns.Add("PunchState", typeof(string));
-                        table.Columns.Add("DeviceType", typeof(string));
-
-                        foreach (DataRow log in logs.Rows)
+                        while (true)
                         {
-                            string employeeId = log["EmployeeId"]?.ToString() ?? string.Empty;
-                            DateTime punchTime = Convert.ToDateTime(log["PunchTime"]);
+                            var logs = await repo.GetDeviceLogsAsync(tenantId,offset,batchSize,month,year);
 
-                            string direction = "0";
-                            if (log["Direction"] != DBNull.Value &&
-                                !string.IsNullOrWhiteSpace(log["Direction"].ToString()))
+                            if (logs == null || logs.Rows.Count == 0)
+                                break;
+
+                            // Build TVP DataTable
+                            var table = ETimeTrackRepository.CreateRawPunchTable();
+
+                            foreach (DataRow log in logs.Rows)
                             {
-                                direction = log["Direction"].ToString();
-                            }
+                                string employeeId = log["EmployeeId"]?.ToString() ?? string.Empty;
+                                DateTime punchTime = Convert.ToDateTime(log["PunchTime"]);
 
-                            string deviceId = log["SerialNumber"]?.ToString() ?? string.Empty;
-
-                            string rawPayload = $"{employeeId} {punchTime:yyyy-MM-dd HH:mm:ss} {direction}";
-
-                            table.Rows.Add(deviceId, employeeId, punchTime, rawPayload, direction, "ESSL");
-
-                            if (punchTime > latestTime)
-                                latestTime = punchTime;
-                        }
-
-                        // Bulk insert once
-                        var insertedRows = await repo.BulkInsertRawPunchAsync(table);
-
-                        // send RawPunchId to background processor
-                        if (insertedRows != null && insertedRows.Rows.Count > 0)
-                        {
-                            foreach (DataRow r in insertedRows.Rows)
-                            {
-                                long rawPunchId = Convert.ToInt64(r["RawPunchId"]);
-
-                                await _taskQueue.QueueBackgroundWorkItem(async token =>
+                                string direction = "0";
+                                if (log["Direction"] != DBNull.Value &&
+                                    !string.IsNullOrWhiteSpace(log["Direction"].ToString()))
                                 {
-                                    using var scope = _scopeFactory.CreateScope();
+                                    direction = log["Direction"].ToString()!;
+                                }
 
-                                    var bgRepo = scope.ServiceProvider
-                                        .GetRequiredService<IETimeTrackRepository>();
+                                string deviceId = log["SerialNumber"]?.ToString() ?? string.Empty;
+                                string rawPayload = $"{employeeId} {punchTime:yyyy-MM-dd HH:mm:ss} {direction}";
+                                ETimeTrackRepository.AddRawPunchRow(table, deviceId, employeeId, punchTime, rawPayload, direction, "ESSL");
 
-                                    await bgRepo.ProcessDailyAttendance(rawPunchId);
-                                });
+                                if (punchTime > latestTime)
+                                    latestTime = punchTime;
                             }
-                        }
 
-                        offset += batchSize;
+                            // Bulk insert all rows via PRC_Bulk_Insert_RawPunch (single SP call)
+                            var insertedRows = await repo.BulkInsertRawPunchAsync(table);
+
+                            // Enqueue each inserted RawPunchId for SP_SaaS_Attendance_Process_V5
+                            if (insertedRows != null && insertedRows.Rows.Count > 0)
+                            {
+                                _logger.LogInformation("Inserted {Count} punches for Tenant {TenantId} {Month}/{Year}. Enqueuing for processing...",
+                                    insertedRows.Rows.Count, tenantId, month, year);
+
+                                foreach (DataRow r in insertedRows.Rows)
+                                {
+                                    long rawPunchId = Convert.ToInt64(r["RawPunchId"]);
+
+                                    await _taskQueue.QueueBackgroundWorkItem(async token =>
+                                    {
+                                        try
+                                        {
+                                            using var scope = _scopeFactory.CreateScope();
+                                            var bgRepo = scope.ServiceProvider
+                                                .GetRequiredService<IETimeTrackRepository>();
+                                            await bgRepo.ProcessDailyAttendance(rawPunchId);
+                                        }
+                                        catch (Exception ex)
+                                        {
+                                            _logger.LogError(ex, "Background ProcessDailyAttendance failed for RawPunchId {RawPunchId}", rawPunchId);
+                                        }
+                                    });
+                                }
+                            }
+
+                            offset += batchSize;
+                        }
                     }
 
+                    // Update LastSyncTime to the latest punch found across both months
                     if (latestTime != DateTime.MinValue)
                     {
                         await repo.UpdateLastSyncAsync(tenantId, latestTime);

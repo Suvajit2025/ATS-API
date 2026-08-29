@@ -126,7 +126,7 @@ namespace ATS.API.Controllers
                         continue;
 
                     string punchState = parts.Length > 2 ? parts[2] : "0";
-                    punchTable.Rows.Add(SN, empId, punchTime, line, punchState, "ADMS");
+                    ETimeTrackRepository.AddRawPunchRow(punchTable, SN, empId, punchTime, line, punchState, "ADMS");
                 }
 
                 if (punchTable.Rows.Count > 0)
